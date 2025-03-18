@@ -979,7 +979,7 @@ class BaseDataset(Dataset):
 
     def trajectory_filter(self, data):
 
-        trajs = data['track_infos']['trajs']
+        trajs = data['track_infos']['trajs'].copy()
         current_idx = data['current_time_index']
         obj_summary = data['object_summary']
 
@@ -1000,11 +1000,10 @@ class BaseDataset(Dataset):
             # gt_future = positions[current_idx+1:, :]
             # valid_past = count_valid_steps_past(validity[:current_idx+1])
 
-
-            future_mask =validity[current_idx+1:]
-            future_mask[-1]=0
-            idx_of_first_zero = np.where(future_mask == 0)[0]
-            idx_of_first_zero = len(future_mask) if len(idx_of_first_zero) == 0 else idx_of_first_zero[0]
+            # future_mask =validity[current_idx+1:]
+            # future_mask[-1]=0
+            # idx_of_first_zero = np.where(future_mask == 0)[0]
+            # idx_of_first_zero = len(future_mask) if len(idx_of_first_zero) == 0 else idx_of_first_zero[0]
 
             #past_trajectory_valid = past_traj[-valid_past:, :]  # Time(valid) X (x,y)
 

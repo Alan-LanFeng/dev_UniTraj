@@ -28,10 +28,10 @@ def train(cfg):
     eval_batch_size = max(cfg.method['eval_batch_size'] // len(cfg.devices), 1)
 
     call_backs = []
-
+    monitor = cfg.method.metric_monitor
     checkpoint_callback = ModelCheckpoint(
-        monitor='val/brier_fde',  # Replace with your validation metric
-        filename='{epoch}-{val/brier_fde:.2f}',
+        monitor=monitor,  # Replace with your validation metric
+        filename='{epoch}-{.2f}',
         save_top_k=1,
         mode='min',  # 'min' for loss/error, 'max' for accuracy
         dirpath=f'./unitraj_ckpt/{cfg.exp_name}'
