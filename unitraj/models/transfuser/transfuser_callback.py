@@ -44,7 +44,6 @@ class TransfuserCallback(pl.Callback):
 
     def on_validation_epoch_start(self, trainer: pl.Trainer, lightning_module: pl.LightningModule) -> None:
         """Inherited, see superclass."""
-        pass
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, lightning_module: pl.LightningModule) -> None:
         """Inherited, see superclass."""
@@ -65,15 +64,12 @@ class TransfuserCallback(pl.Callback):
 
     def on_test_epoch_start(self, trainer: pl.Trainer, lightning_module: pl.LightningModule) -> None:
         """Inherited, see superclass."""
-        pass
 
     def on_test_epoch_end(self, trainer: pl.Trainer, lightning_module: pl.LightningModule) -> None:
         """Inherited, see superclass."""
-        pass
 
     def on_train_epoch_start(self, trainer: pl.Trainer, lightning_module: pl.LightningModule) -> None:
         """Inherited, see superclass."""
-        pass
 
     def on_train_epoch_end(
         self, trainer: pl.Trainer, lightning_module: pl.LightningModule, unused: Optional[Any] = None

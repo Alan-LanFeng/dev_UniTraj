@@ -4,6 +4,7 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 import pytorch_lightning as pl
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 from unitraj.models.abstract_agent import AbstractAgent
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
@@ -14,8 +15,6 @@ from unitraj.models.transfuser.transfuser_features import TransfuserFeatureBuild
 from unitraj.utils.dataclasses import SensorConfig
 from unitraj.models.abstract_agent import AbstractFeatureBuilder, AbstractTargetBuilder
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
-
-import pytorch_lightning as pl
 
 from torch import Tensor
 from typing import Dict, Tuple
@@ -74,20 +73,25 @@ class TransfuserAgent(AbstractAgent):
 
     def __init__(
         self,
-        config,
+        config: TransfuserConfig,
         self_config=TransfuserConfig,
+        checkpoint_path: Optional[str] = None,
+        trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5),
     ):
         """
         Initializes TransFuser agent.
         :param config: global config of TransFuser agent
         :param lr: learning rate during training
         :param checkpoint_path: optional path string to checkpoint, defaults to None
+        :param trajectory_sampling: trajectory sampling specification
         """
-        super().__init__()
+        super().__init__(trajectory_sampling)
 
         self._config = self_config
         self._lr = config.learning_rate
-        self._transfuser_model = TransfuserModel(self_config)
+
+        self._checkpoint_path = checkpoint_path
+        self._transfuser_model = TransfuserModel(self._trajectory_sampling, self_config)
 
     def name(self) -> str:
         """Inherited, see superclass."""
@@ -105,11 +109,23 @@ class TransfuserAgent(AbstractAgent):
 
     def get_sensor_config(self) -> SensorConfig:
         """Inherited, see superclass."""
-        return SensorConfig.build_all_sensors(include=[3])
+        # NOTE: Transfuser only uses current frame (with index 3 by default)
+        history_steps = [3]
+        return SensorConfig(
+            cam_f0=history_steps,
+            cam_l0=history_steps,
+            cam_l1=False,
+            cam_l2=False,
+            cam_r0=history_steps,
+            cam_r1=False,
+            cam_r2=False,
+            cam_b0=False,
+            lidar_pc=history_steps if not self._config.latent else False,
+        )
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
         """Inherited, see superclass."""
-        return [TransfuserTargetBuilder(config=self._config)]
+        return [TransfuserTargetBuilder(trajectory_sampling=self._trajectory_sampling, config=self._config)]
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:
         """Inherited, see superclass."""
@@ -128,7 +144,9 @@ class TransfuserAgent(AbstractAgent):
         """Inherited, see superclass."""
         return transfuser_loss(targets, predictions, self._config)
 
-    def get_optimizers(self) -> Union[Optimizer, Dict[str, Union[Optimizer, LRScheduler]]]:
+    def get_optimizers(
+        self,
+    ) -> Union[Optimizer, Dict[str, Union[Optimizer, LRScheduler]]]:
         """Inherited, see superclass."""
         return torch.optim.Adam(self._transfuser_model.parameters(), lr=self._lr)
 

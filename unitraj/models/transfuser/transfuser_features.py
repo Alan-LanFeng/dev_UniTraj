@@ -18,6 +18,9 @@ from abc import abstractmethod
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
 from unitraj.utils.dataclasses import AgentInput, Scene, Annotations,BoundingBoxIndex, LidarIndex,tracked_object_types
 from unitraj.models.abstract_agent import AbstractFeatureBuilder, AbstractTargetBuilder
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from torchvision import transforms
+
 
 
 class TransfuserFeatureBuilder(AbstractFeatureBuilder):
@@ -39,7 +42,8 @@ class TransfuserFeatureBuilder(AbstractFeatureBuilder):
         features = {}
 
         features["camera_feature"] = self._get_camera_feature(agent_input)
-        features["lidar_feature"] = self._get_lidar_feature(agent_input)
+        if not self._config.latent:
+            features["lidar_feature"] = self._get_lidar_feature(agent_input)
         features["status_feature"] = np.concatenate(
             [
                 agent_input.ego_statuses[-1].driving_command,
@@ -169,7 +173,12 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
             )
 
             if name == "vehicle" and _xy_in_lidar(box_x, box_y, self._config):
-                agent_states_list.append(np.array([box_x, box_y, box_heading, box_length, box_width], dtype=np.float32))
+                agent_states_list.append(
+                    np.array(
+                        [box_x, box_y, box_heading, box_length, box_width],
+                        dtype=np.float32,
+                    )
+                )
 
         agents_states_arr = np.array(agent_states_list)
 
@@ -255,7 +264,13 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
                 linestring: LineString = self._geometry_local_coords(map_object.baseline_path.linestring, ego_pose)
                 points = np.array(linestring.coords).reshape((-1, 1, 2))
                 points = self._coords_to_pixel(points)
-                cv2.polylines(map_linestring_mask, [points], isClosed=False, color=255, thickness=2)
+                cv2.polylines(
+                    map_linestring_mask,
+                    [points],
+                    isClosed=False,
+                    color=255,
+                    thickness=2,
+                )
         # OpenCV has origin on top-left corner
         map_linestring_mask = np.rot90(map_linestring_mask)[::-1]
         return map_linestring_mask > 0
@@ -273,7 +288,11 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
             if agent_type in layers:
                 # box_value = (x, y, z, length, width, height, yaw) TODO: add intenum
                 x, y, heading = box_value[0], box_value[1], box_value[-1]
-                box_length, box_width, box_height = box_value[3], box_value[4], box_value[5]
+                box_length, box_width, box_height = (
+                    box_value[3],
+                    box_value[4],
+                    box_value[5],
+                )
                 agent_box = OrientedBox(StateSE2(x, y, heading), box_length, box_width, box_height)
                 exterior = np.array(agent_box.geometry.exterior.coords).reshape((-1, 1, 2))
                 exterior = self._coords_to_pixel(exterior)

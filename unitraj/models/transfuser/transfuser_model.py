@@ -7,14 +7,15 @@ from unitraj.models.transfuser.transfuser_config import TransfuserConfig
 from unitraj.models.transfuser.transfuser_backbone import TransfuserBackbone
 from unitraj.models.transfuser.transfuser_features import BoundingBox2DIndex
 from unitraj.utils.dataclasses import StateSE2Index
-
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 class TransfuserModel(nn.Module):
     """Torch module for Transfuser."""
 
-    def __init__(self, config: TransfuserConfig):
+    def __init__(self, trajectory_sampling: TrajectorySampling, config: TransfuserConfig):
         """
         Initializes TransFuser torch module.
+        :param trajectory_sampling: trajectory sampling specification.
         :param config: global config dataclass of TransFuser.
         """
 
@@ -35,30 +36,33 @@ class TransfuserModel(nn.Module):
         self._bev_downscale = nn.Conv2d(512, config.tf_d_model, kernel_size=1)
         self._status_encoding = nn.Linear(4 + 2 + 2, config.tf_d_model)
 
-        # self._bev_semantic_head = nn.Sequential(
-        #     nn.Conv2d(
-        #         config.bev_features_channels,
-        #         config.bev_features_channels,
-        #         kernel_size=(3, 3),
-        #         stride=1,
-        #         padding=(1, 1),
-        #         bias=True,
-        #     ),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(
-        #         config.bev_features_channels,
-        #         config.num_bev_classes,
-        #         kernel_size=(1, 1),
-        #         stride=1,
-        #         padding=0,
-        #         bias=True,
-        #     ),
-        #     nn.Upsample(
-        #         size=(config.lidar_resolution_height // 2, config.lidar_resolution_width),
-        #         mode="bilinear",
-        #         align_corners=False,
-        #     ),
-        # )
+        self._bev_semantic_head = nn.Sequential(
+            nn.Conv2d(
+                config.bev_features_channels,
+                config.bev_features_channels,
+                kernel_size=(3, 3),
+                stride=1,
+                padding=(1, 1),
+                bias=True,
+            ),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(
+                config.bev_features_channels,
+                config.num_bev_classes,
+                kernel_size=(1, 1),
+                stride=1,
+                padding=0,
+                bias=True,
+            ),
+            nn.Upsample(
+                size=(
+                    config.lidar_resolution_height // 2,
+                    config.lidar_resolution_width,
+                ),
+                mode="bilinear",
+                align_corners=False,
+            ),
+        )
 
         tf_decoder_layer = nn.TransformerDecoderLayer(
             d_model=config.tf_d_model,
@@ -69,14 +73,14 @@ class TransfuserModel(nn.Module):
         )
 
         self._tf_decoder = nn.TransformerDecoder(tf_decoder_layer, config.tf_num_layers)
-        # self._agent_head = AgentHead(
-        #     num_agents=config.num_bounding_boxes,
-        #     d_ffn=config.tf_d_ffn,
-        #     d_model=config.tf_d_model,
-        # )
+        self._agent_head = AgentHead(
+            num_agents=config.num_bounding_boxes,
+            d_ffn=config.tf_d_ffn,
+            d_model=config.tf_d_model,
+        )
 
         self._trajectory_head = TrajectoryHead(
-            num_poses=config.trajectory_sampling.num_poses,
+            num_poses=trajectory_sampling.num_poses,
             d_ffn=config.tf_d_ffn,
             d_model=config.tf_d_model,
         )
@@ -85,7 +89,10 @@ class TransfuserModel(nn.Module):
         """Torch module forward pass."""
 
         camera_feature: torch.Tensor = features["camera_feature"]
-        lidar_feature: torch.Tensor = features["lidar_feature"]
+        if self._config.latent:
+            lidar_feature = None
+        else:
+            lidar_feature: torch.Tensor = features["lidar_feature"]
         status_feature: torch.Tensor = features["status_feature"]
 
         batch_size = status_feature.shape[0]
@@ -102,16 +109,15 @@ class TransfuserModel(nn.Module):
         query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
         query_out = self._tf_decoder(query, keyval)
 
-        #bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
+        bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
 
-        #output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
-        output = {}
+        output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)
 
-        #agents = self._agent_head(agents_query)
-        #output.update(agents)
+        agents = self._agent_head(agents_query)
+        output.update(agents)
 
         return output
 
