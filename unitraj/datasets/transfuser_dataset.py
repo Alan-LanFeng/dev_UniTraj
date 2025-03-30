@@ -81,6 +81,7 @@ class TransfuserDataset(BaseDataset):
         for builder in self._target_builders:
             features.update(builder.compute_targets(center_gt_trajs))
         features['kalman_difficulty'] = 0
+        features['camera_path'] = camera_data[3]['CAM_F0']
         return [features]
     def postprocess(self, data):
 
@@ -107,9 +108,10 @@ class TransfuserDataset(BaseDataset):
         feature = {}
         target = {}
         feature['camera_feature'] = input_dict['camera_feature']
-        feature['lidar_feature'] = input_dict['lidar_feature']
+        #feature['lidar_feature'] = input_dict['lidar_feature']
         feature['status_feature'] = input_dict['status_feature']
         target['trajectory'] = input_dict['trajectory']
+        feature['camera_path'] = input_dict['camera_path']
         #batch_dict = {'batch_size': batch_size, 'input_dict': input_dict, 'batch_sample_count': batch_size}
         return (feature, target)
 

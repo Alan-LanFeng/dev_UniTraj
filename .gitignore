@@ -3,3 +3,11 @@
 /unitraj/outputs/
 /unitraj/tmp
 .DS_Store
+__pycache__
+*.pyc
+*.png
+*.log
+*.wandb
+unitraj/wandb
+UniTraj.egg-info
+unitraj/unitraj_ckpt
