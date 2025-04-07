@@ -14,71 +14,125 @@ class TransfuserDataset(BaseDataset):
 
 
     def preprocess(self, scenario):
-        cfg = self.config
-        synthetic_camera, real_camera = None, None
-        if cfg['use_synthetic_sensors']:
-            synthetic_camera = scenario['synthetic_camera']
-        if cfg['use_real_sensors']:
-            real_camera = scenario['real_camera']
-        driving_command = scenario['driving_command']
-        scenario = super().preprocess(scenario)
-        scenario['synthetic_camera'], scenario['real_camera'] = synthetic_camera, real_camera
-        scenario['driving_command'] = driving_command
         return scenario
 
     def process(self, internal_format):
-        info = internal_format
-        scene_id = info['scenario_id']
-
-        sdc_track_index = info['sdc_track_index']
-        current_time_index = info['current_time_index']
-        timestamps = np.array(info['timestamps_seconds'][:current_time_index + 1], dtype=np.float32)
-
-        track_infos = info['track_infos']
-
-        # use uds only!
-        track_index_to_predict = np.array([sdc_track_index])
-        obj_types = np.array(track_infos['object_type'])
-        obj_trajs_full = track_infos['trajs']  # (num_objects, num_timestamp, 10)
-        obj_trajs_past = obj_trajs_full[:, :current_time_index + 1]
-        obj_trajs_future = obj_trajs_full[:, current_time_index + 1:]
-
-        center_objects, track_index_to_predict = self.get_interested_agents(
-            track_index_to_predict=track_index_to_predict,
-            obj_trajs_full=obj_trajs_full,
-            current_time_index=current_time_index,
-            obj_types=obj_types, scene_id=scene_id
-        )
-        if center_objects is None: return None
-
-        sample_num = center_objects.shape[0]
-
-        (obj_trajs_data, obj_trajs_mask, obj_trajs_pos, obj_trajs_last_pos, obj_trajs_future_state,
-         obj_trajs_future_mask, center_gt_trajs,
-         center_gt_trajs_mask, center_gt_final_valid_idx,
-         track_index_to_predict_new) = self.get_agent_data(
-            center_objects=center_objects, obj_trajs_past=obj_trajs_past, obj_trajs_future=obj_trajs_future,
-            track_index_to_predict=track_index_to_predict, sdc_track_index=sdc_track_index,
-            timestamps=timestamps, obj_types=obj_types
-        )
-        ego_data = obj_trajs_data[0,0][obj_trajs_mask.astype(bool)[0,0]]
-
-        if self.config['use_real_sensors']:
-            camera_data = internal_format['real_camera']
-        else:
+        sdc_id = internal_format['metadata']['sdc_id']
+        tracks = internal_format['tracks']
+        sdc_track = tracks[sdc_id]
+        driving_command = internal_format['driving_command']
+        if self.config['use_synthetic_sensors']:
             camera_data = internal_format['synthetic_camera']
+        else:
+            camera_data = internal_format['real_camera']
+        data_len = len(driving_command)
 
-        used_cameras = self.config['used_cameras']
-        agent_input = get_agent_input(ego_data,internal_format['driving_command'], camera_data,used_cameras)
-        features = {}
-        center_gt_trajs = center_gt_trajs[center_gt_trajs_mask.astype(bool)]
-        for builder in self._feature_builders:
-            features.update(builder.compute_features(agent_input))
-        for builder in self._target_builders:
-            features.update(builder.compute_targets(center_gt_trajs))
-        features['kalman_difficulty'] = 0
-        features['camera_path'] = camera_data[3]['CAM_F0']
-        return [features]
+        results = []
+        sdc_pos = sdc_track['state']['position'][...,:2]
+        sdc_heading = sdc_track['state']['heading'][...,np.newaxis]
+        sdc_vel = sdc_track['state']['velocity']
+        # calculate the acceleration
+        sdc_acce = np.zeros_like(sdc_vel)
+        sdc_acce[1:] = (sdc_vel[1:] - sdc_vel[:-1]) / 0.1
+        sdc_acce[0] = sdc_acce[1]
+        sdc_feature = np.concatenate([sdc_pos, sdc_heading, sdc_vel, sdc_acce], axis=-1)
+        driving_command = internal_format['driving_command']
+
+
+        for current_index in range(15, data_len,5):
+            max_future_inex = current_index + 40
+            if max_future_inex >= data_len:
+                break
+            total_index = np.arange(current_index-15, max_future_inex+1, 5)
+            past_index = total_index[:4]
+            future_index = total_index[4:]
+
+            sdc_feature_raw = sdc_feature[total_index].copy()
+            sdc_pos, sdc_heading, sdc_vel, sdc_acce = sdc_feature_raw[:, :2], sdc_feature_raw[:, 2:3], sdc_feature_raw[:, 3:5], sdc_feature_raw[:, 5:]
+
+            # Normalize position by translating to the origin (t=0)
+            sdc_pos_norm = sdc_pos - sdc_pos[3]  # shape (T, 2)
+
+            def normalize_angle(angle):
+                return (angle + np.pi) % (2 * np.pi) - np.pi
+
+            sdc_heading_norm = normalize_angle(sdc_heading - sdc_heading[3])  # shape (T,)
+
+            # Get rotation matrix to align to heading at t=0
+            theta0 = sdc_heading[3,0]
+            cos_t, sin_t = np.cos(-theta0), np.sin(-theta0)
+            R = np.array([[cos_t, -sin_t],
+                          [sin_t, cos_t]])  # shape (2, 2)
+
+            # Rotate position, velocity, acceleration into ego frame at t=0
+            sdc_pos_norm = sdc_pos_norm @ R.T  # shape (T, 2)
+            sdc_vel_rot = sdc_vel @ R.T  # shape (T, 2)
+            sdc_acce_rot = sdc_acce @ R.T  # shape (T, 2)
+
+            # Rebuild feature: pos (normalized), heading (normalized), vel (rotated), acc (rotated)
+            sdc_feature_t = np.concatenate([sdc_pos_norm, sdc_heading_norm, sdc_vel_rot, sdc_acce_rot], axis=-1)
+
+            is_monotonic = self.is_monotonic_trajectory(sdc_feature_t, threshold=self.config['constant_velocity_threshold'])
+            if is_monotonic:
+                continue
+            used_cameras = self.config['used_cameras']
+            camera_index = past_index//5
+            camera = [camera_data[i] for i in camera_index]
+            command = [driving_command[i] for i in past_index]
+            sdc_past_feature = sdc_feature_t[:4]
+            sdc_future_feature = sdc_feature_t[4:]
+
+            agent_input = get_agent_input(sdc_past_feature,command, camera,used_cameras)
+            features = {}
+            for builder in self._feature_builders:
+                features.update(builder.compute_features(agent_input))
+            for builder in self._target_builders:
+                features.update(builder.compute_targets(sdc_future_feature[:,:3]))
+            features['kalman_difficulty'] = 0
+            features['camera_path'] = camera[3]['CAM_F0']
+            results.append(features)
+        return results
+
+    def is_monotonic_trajectory(self, sdc_feature, history_frames=4, future_frames=8, dt=0.5, threshold=0.5):
+        """
+        检查是否是单调轨迹（可用恒速模型外推且误差小）
+
+        Args:
+            sdc_feature: np.array of shape (12, 7) - 轨迹特征
+            history_frames: int - 历史帧数
+            future_frames: int - 未来帧数
+            dt: float - 时间间隔（秒）
+            threshold: float - 平均位置误差阈值（米）
+
+        Returns:
+            bool - 是否是单调轨迹（True 表示应被过滤）
+        """
+        assert sdc_feature.shape == (history_frames + future_frames, 7)
+
+        # 历史和未来轨迹
+        history = sdc_feature[:history_frames]
+        future = sdc_feature[history_frames:]
+
+        # 获取最后一帧的历史位置和速度
+        last_pos = history[-1, :2]  # [x, y]
+        velocity = history[-1, 3:5]  # [vx, vy]
+
+        # 使用 constant velocity model 外推未来位置
+        predicted_future_pos = []
+        for i in range(1, future_frames + 1):
+            delta_t = i * dt
+            pred_pos = last_pos + velocity * delta_t
+            predicted_future_pos.append(pred_pos)
+        predicted_future_pos = np.stack(predicted_future_pos, axis=0)  # shape: (future_frames, 2)
+
+        # 真实未来位置
+        true_future_pos = future[:, :2]  # shape: (future_frames, 2)
+
+        # 计算平均欧氏距离
+        errors = np.linalg.norm(predicted_future_pos - true_future_pos, axis=1)
+        mean_error = np.mean(errors)
+
+        return mean_error < threshold
     def postprocess(self, data):
 
         return data

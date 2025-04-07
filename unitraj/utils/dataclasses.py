@@ -290,24 +290,24 @@ def get_agent_input(ego_data,driving_command,camera_data,used_cameras) -> AgentI
     """
     ego_statuses: List[EgoStatus] = []
     cameras: List[Cameras] = []
-    lidars: List[Lidar] = []
 
-    if driving_command == 'forward':
-        driving_command = np.array([0,1,0,0])
-    elif driving_command == 'left':
-        driving_command = np.array([1,0,0,0])
-    elif driving_command == 'right':
-        driving_command = np.array([0,0,1,0])
-    else:
-        driving_command = np.array([0,0,0,1])
 
     for frame_idx in range(len(ego_data)):
+        command_t = driving_command[frame_idx]
+        if command_t == 'forward':
+            command_t = np.array([0, 1, 0, 0])
+        elif command_t == 'left':
+            command_t = np.array([1, 0, 0, 0])
+        elif command_t == 'right':
+            command_t = np.array([0, 0, 1, 0])
+        else:
+            command_t = np.array([0, 0, 0, 1])
         ego_statuses.append(
             EgoStatus(
                 ego_pose=ego_data[frame_idx][:3],
                 ego_velocity=ego_data[frame_idx][-4:-2],
                 ego_acceleration=ego_data[frame_idx][-2:],
-                driving_command=driving_command,
+                driving_command=command_t,
             )
         )
         cameras.append(get_cameras_from_dict(camera_data[frame_idx],used_cameras))
