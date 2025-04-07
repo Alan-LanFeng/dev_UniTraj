@@ -259,7 +259,7 @@ def load_pcd_file(pcd_path):
 
 def get_cameras_from_dict(camera_dict,sensor_names):
     data_dict = {}
-    for camera_name in camera_dict.keys():
+    for camera_name in camera_params.keys():
         camera_identifier = camera_name.lower()
         if camera_identifier in sensor_names:
             data_dict[camera_identifier] = Camera(
@@ -283,7 +283,7 @@ def get_cameras_from_dict(camera_dict,sensor_names):
         cam_b0=data_dict["cam_b0"],
     )
 
-def get_agent_input(ego_data,driving_command,camera_data,lidar_data,used_cameras) -> AgentInput:
+def get_agent_input(ego_data,driving_command,camera_data,used_cameras) -> AgentInput:
     """
     Extracts agents input dataclass (without privileged information) from scene.
     :return: agent input dataclass
@@ -311,9 +311,9 @@ def get_agent_input(ego_data,driving_command,camera_data,lidar_data,used_cameras
             )
         )
         cameras.append(get_cameras_from_dict(camera_data[frame_idx],used_cameras))
-        lidars.append(Lidar(load_pcd_file(lidar_data[frame_idx]).T))
+        #lidars.append(Lidar(load_pcd_file(lidar_data[frame_idx]).T))
 
-    return AgentInput(ego_statuses, cameras, lidars)
+    return AgentInput(ego_statuses, cameras, None)
 
 def normalize_angle(angle):
     """

@@ -15,16 +15,14 @@ class TransfuserDataset(BaseDataset):
 
     def preprocess(self, scenario):
         cfg = self.config
-        synthetic_camera, synthetic_lidar, real_camera, real_lidar = None, None, None, None
+        synthetic_camera, real_camera = None, None
         if cfg['use_synthetic_sensors']:
             synthetic_camera = scenario['synthetic_camera']
-            synthetic_lidar = scenario['synthetic_lidar']
         if cfg['use_real_sensors']:
             real_camera = scenario['real_camera']
-            real_lidar = scenario['real_lidar']
         driving_command = scenario['driving_command']
         scenario = super().preprocess(scenario)
-        scenario['synthetic_camera'], scenario['synthetic_lidar'], scenario['real_camera'], scenario['real_lidar'] = synthetic_camera, synthetic_lidar, real_camera, real_lidar
+        scenario['synthetic_camera'], scenario['real_camera'] = synthetic_camera, real_camera
         scenario['driving_command'] = driving_command
         return scenario
 
@@ -67,13 +65,11 @@ class TransfuserDataset(BaseDataset):
 
         if self.config['use_real_sensors']:
             camera_data = internal_format['real_camera']
-            lidar_data = internal_format['real_lidar']
         else:
             camera_data = internal_format['synthetic_camera']
-            lidar_data = internal_format['synthetic_lidar']
 
         used_cameras = self.config['used_cameras']
-        agent_input = get_agent_input(ego_data,internal_format['driving_command'], camera_data,lidar_data,used_cameras)
+        agent_input = get_agent_input(ego_data,internal_format['driving_command'], camera_data,used_cameras)
         features = {}
         center_gt_trajs = center_gt_trajs[center_gt_trajs_mask.astype(bool)]
         for builder in self._feature_builders:
@@ -108,7 +104,6 @@ class TransfuserDataset(BaseDataset):
         feature = {}
         target = {}
         feature['camera_feature'] = input_dict['camera_feature']
-        #feature['lidar_feature'] = input_dict['lidar_feature']
         feature['status_feature'] = input_dict['status_feature']
         target['trajectory'] = input_dict['trajectory']
         feature['camera_path'] = input_dict['camera_path']

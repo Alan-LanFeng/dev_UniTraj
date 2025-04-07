@@ -1,5 +1,4 @@
 import argparse
-
 from IPython.display import Image as IImage
 import pygame
 import numpy as np
@@ -15,41 +14,9 @@ import cv2
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from tqdm import tqdm
 import imageio
+from unitraj.utils.dataclasses import camera_params
 from numpy import array
 
-camera_params = {'CAM_F0': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[-0.00785972, -0.02271912,  0.99971099],
-       [-0.99994262,  0.00745516, -0.00769211],
-       [-0.00727825, -0.99971409, -0.02277642]]), 'sensor2lidar_translation': array([ 1.65506747, -0.01168732,  1.49112208])}, 'CAM_L0': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[ 0.81776776, -0.0057693 ,  0.57551942],
-       [-0.57553938, -0.01377628,  0.81765802],
-       [ 0.0032112 , -0.99988846, -0.01458626]]), 'sensor2lidar_translation': array([1.63069485, 0.11956747, 1.48117884])}, 'CAM_L1': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[ 0.93120104,  0.00261563, -0.36449662],
-       [ 0.36447127, -0.02048653,  0.93098926],
-       [-0.00503215, -0.99978671, -0.0200304 ]]), 'sensor2lidar_translation': array([1.29939471, 0.63819702, 1.36736822])}, 'CAM_L2': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[ 0.63520782,  0.01497516, -0.77219607],
-       [ 0.77232489, -0.00580669,  0.63520119],
-       [ 0.00502834, -0.99987101, -0.01525415]]), 'sensor2lidar_translation': array([-0.49561003,  0.54750373,  1.3472672 ])}, 'CAM_R0': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[-0.82454901,  0.01165722,  0.56567043],
-       [-0.56528395,  0.02532491, -0.82450755],
-       [-0.02393702, -0.9996113 , -0.01429199]]), 'sensor2lidar_translation': array([ 1.61828343, -0.15532203,  1.49007665])}, 'CAM_R1': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[-0.92684778,  0.02177016, -0.37480562],
-       [ 0.37497631,  0.00421964, -0.92702479],
-       [-0.01859993, -0.9997541 , -0.01207426]]), 'sensor2lidar_translation': array([ 1.27299407, -0.60973112,  1.37217911])}, 'CAM_R2': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[-0.62253245,  0.03706878, -0.78171558],
-       [ 0.78163434, -0.02000083, -0.62341618],
-       [-0.03874424, -0.99911254, -0.01652307]]), 'sensor2lidar_translation': array([-0.48771615, -0.493167  ,  1.35027683])}, 'CAM_B0': {'distortion': array([-0.356123,  0.172545, -0.00213 ,  0.000464, -0.05231 ]), 'intrinsics': array([[1.545e+03, 0.000e+00, 9.600e+02],
-       [0.000e+00, 1.545e+03, 5.600e+02],
-       [0.000e+00, 0.000e+00, 1.000e+00]]), 'sensor2lidar_rotation': array([[ 0.00802542,  0.01047463, -0.99991293],
-       [ 0.99989075, -0.01249671,  0.00789433],
-       [-0.01241293, -0.99986705, -0.01057378]]), 'sensor2lidar_translation': array([-0.47463312,  0.02368552,  1.4341838 ])}}
 
 def configure_all_ax(ax) :
     """
@@ -339,8 +306,7 @@ if __name__ == "__main__":
         synthetic_plot,ax = plot_cameras_frame_with_lidar(all_synthetic_camera[0], all_synthetic_lidar[0], bev)
         real_plot,ax = plot_cameras_frame_with_lidar(all_real_camera[0], all_real_lidar[0][:,:3], bev)
         all_frames.append(concat_two(synthetic_plot, real_plot))
-        synthetic_frames.append(synthetic_plot)
-        real_frames.append(real_plot)
+
 
         cnt=1
         scenario = env.engine.data_manager.current_scenario

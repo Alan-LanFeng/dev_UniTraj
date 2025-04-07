@@ -11,3 +11,5 @@ __pycache__
 unitraj/wandb
 UniTraj.egg-info
 unitraj/unitraj_ckpt
+.idea
+.vscode
