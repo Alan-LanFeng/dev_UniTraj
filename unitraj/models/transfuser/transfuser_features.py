@@ -73,7 +73,7 @@ class TransfuserFeatureBuilder(AbstractFeatureBuilder):
         resized_image = cv2.resize(stitched_image, (1024, 256))
         #tensor_image = transforms.ToTensor()(resized_image)
         # swap axis
-        resized_image = np.transpose(resized_image, (2, 0, 1)).astype(np.float32)
+        resized_image = np.transpose(resized_image, (2, 0, 1)).astype(np.float32)/255.0
         return resized_image
 
     def _get_lidar_feature(self, agent_input: AgentInput) -> torch.Tensor:
