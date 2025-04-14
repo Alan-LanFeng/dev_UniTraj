@@ -15,9 +15,10 @@ from unitraj.models.transfuser.transfuser_features import TransfuserFeatureBuild
 from unitraj.utils.dataclasses import SensorConfig
 from unitraj.models.abstract_agent import AbstractFeatureBuilder, AbstractTargetBuilder
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
-
+import matplotlib.pyplot as plt
 from torch import Tensor
 from typing import Dict, Tuple
+import wandb
 
 
 
@@ -43,7 +44,49 @@ class TransfuserLightningModule(pl.LightningModule):
         features, targets = batch
         prediction = self.agent.forward(features)
         loss = self.agent.compute_loss(features, targets, prediction)
-        self.log(f"{logging_prefix}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
+        ego_status = features['status_feature'][0].cpu().numpy()
+        pred_traj = prediction['trajectory'][0].cpu().numpy()[:, :2]
+        gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
+
+        ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
+        self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        if self.global_step<=5:
+            # 创建图像
+            # 创建两个并列子图
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+
+            # ==== 子图1：Camera 图像 + 状态 ====
+            ax1.imshow(camera)
+            ax1.set_title("Camera View")
+            ax1.axis('off')
+
+            # 在图像上显示 ego_status 数值
+            status_text = "\n".join([f"{i}: {v:.2f}" for i, v in enumerate(ego_status)])
+            props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+            ax1.text(5, 20, status_text, fontsize=10, verticalalignment='top', bbox=props)
+
+            # ==== 子图2：轨迹图 ====
+            ax2.plot(pred_traj[:, 0], pred_traj[:, 1], 'ro-', label="Predicted Trajectory")
+            ax2.plot(gt_traj[:, 0], gt_traj[:, 1], 'go-', label="Ground Truth Trajectory")
+
+            # 可选：加编号标注
+            for i in range(len(pred_traj)):
+                ax2.annotate(str(i), (pred_traj[i, 0], pred_traj[i, 1]), color='red')
+                ax2.annotate(str(i), (gt_traj[i, 0], gt_traj[i, 1]), color='green')
+
+            ax2.set_title("Trajectory")
+            ax2.set_xlabel("X")
+            ax2.set_ylabel("Y")
+            ax2.legend()
+            ax2.grid(True)
+            ax2.axis('equal')  # 保持坐标轴比例一致
+            # 保存为图像并上传到 wandb
+            self.log(f"{logging_prefix}/trajectory_visualization", wandb.Image(fig))
+
         return loss
 
     def training_step(self, batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]], batch_idx: int) -> Tensor:
