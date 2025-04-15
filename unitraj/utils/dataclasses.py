@@ -294,14 +294,6 @@ def get_agent_input(ego_data,driving_command,camera_data,used_cameras) -> AgentI
 
     for frame_idx in range(len(ego_data)):
         command_t = driving_command[frame_idx]
-        if command_t == 'forward':
-            command_t = np.array([0, 1, 0, 0])
-        elif command_t == 'left':
-            command_t = np.array([1, 0, 0, 0])
-        elif command_t == 'right':
-            command_t = np.array([0, 0, 1, 0])
-        else:
-            command_t = np.array([0, 0, 0, 1])
         ego_statuses.append(
             EgoStatus(
                 ego_pose=ego_data[frame_idx][:3],
@@ -311,7 +303,6 @@ def get_agent_input(ego_data,driving_command,camera_data,used_cameras) -> AgentI
             )
         )
         cameras.append(get_cameras_from_dict(camera_data[frame_idx],used_cameras))
-        #lidars.append(Lidar(load_pcd_file(lidar_data[frame_idx]).T))
 
     return AgentInput(ego_statuses, cameras, None)
 

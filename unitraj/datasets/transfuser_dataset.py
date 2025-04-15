@@ -31,7 +31,7 @@ class TransfuserDataset(BaseDataset):
         if not os.path.exists(camera_data[0]['CAM_F0']) and not self.is_validation:
             camera_data = internal_format['synthetic_camera']
             
-        data_len = len(driving_command)
+        data_len = internal_format['length']
 
         results = []
         sdc_pos = sdc_track['state']['position'][...,:2]
@@ -83,7 +83,7 @@ class TransfuserDataset(BaseDataset):
             used_cameras = self.config['used_cameras']
             camera_index = past_index//5
             camera = [camera_data[i] for i in camera_index]
-            command = [driving_command[i] for i in past_index]
+            command = [driving_command[i] for i in camera_index]
             sdc_past_feature = sdc_feature_t[:4]
             sdc_future_feature = sdc_feature_t[4:]
 
