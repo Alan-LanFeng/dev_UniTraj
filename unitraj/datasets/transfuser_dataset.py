@@ -4,6 +4,8 @@ import numpy as np
 from unitraj.models.transfuser.transfuser_features import TransfuserFeatureBuilder,TransfuserTargetBuilder
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
 import torch
+import os
+
 class TransfuserDataset(BaseDataset):
 
     def __init__(self, config=None, is_validation=False):
@@ -25,6 +27,10 @@ class TransfuserDataset(BaseDataset):
             camera_data = internal_format['synthetic_camera']
         else:
             camera_data = internal_format['real_camera']
+
+        if not os.path.exists(camera_data[0]['CAM_F0']) and not self.is_validation:
+            camera_data = internal_format['synthetic_camera']
+            
         data_len = len(driving_command)
 
         results = []
@@ -36,7 +42,6 @@ class TransfuserDataset(BaseDataset):
         sdc_acce[1:] = (sdc_vel[1:] - sdc_vel[:-1]) / 0.1
         sdc_acce[0] = sdc_acce[1]
         sdc_feature = np.concatenate([sdc_pos, sdc_heading, sdc_vel, sdc_acce], axis=-1)
-        driving_command = internal_format['driving_command']
 
 
         for current_index in range(15, data_len,5):

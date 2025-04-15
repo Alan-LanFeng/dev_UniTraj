@@ -48,13 +48,13 @@ class TransfuserLightningModule(pl.LightningModule):
 
         camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
         ego_status = features['status_feature'][0].cpu().numpy()
-        pred_traj = prediction['trajectory'][0].cpu().numpy()[:, :2]
+        pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
         gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
 
         ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
         self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        if self.global_step<=5:
+        if self.global_step % 1000 == 0:
             # 创建图像
             # 创建两个并列子图
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
@@ -85,7 +85,7 @@ class TransfuserLightningModule(pl.LightningModule):
             ax2.grid(True)
             ax2.axis('equal')  # 保持坐标轴比例一致
             # 保存为图像并上传到 wandb
-            self.log(f"{logging_prefix}/trajectory_visualization", wandb.Image(fig))
+            wandb.log({f"{logging_prefix}/trajectory_visualization": [wandb.Image(fig)]})
 
         return loss
 

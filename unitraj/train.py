@@ -31,7 +31,6 @@ def train(cfg):
     monitor = cfg.method.metric_monitor
     checkpoint_callback = ModelCheckpoint(
         monitor=monitor,  # Replace with your validation metric
-        filename='{epoch}-{.2f}',
         save_top_k=1,
         mode='min',  # 'min' for loss/error, 'max' for accuracy
         dirpath=f'./unitraj_ckpt/{cfg.exp_name}'
@@ -54,7 +53,7 @@ def train(cfg):
         gradient_clip_val=cfg.method.grad_clip_norm,
         accelerator="cpu" if cfg.debug else "gpu",
         profiler="simple",
-        strategy="auto" if cfg.debug else "ddp",
+        strategy="auto" if cfg.debug else "ddp_find_unused_parameters_true",
         callbacks=call_backs
     )
 
