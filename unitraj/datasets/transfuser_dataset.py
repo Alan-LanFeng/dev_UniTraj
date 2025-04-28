@@ -23,13 +23,9 @@ class TransfuserDataset(BaseDataset):
         tracks = internal_format['tracks']
         sdc_track = tracks[sdc_id]
         driving_command = internal_format['driving_command']
-        if self.config['use_synthetic_sensors']:
-            camera_data = internal_format['synthetic_camera']
-        else:
-            camera_data = internal_format['real_camera']
 
-        if not os.path.exists(camera_data[0]['CAM_F0']) and not self.is_validation:
-            camera_data = internal_format['synthetic_camera']
+        camera_data_real = internal_format['real_camera']
+        camera_data_render = internal_format['rendered_camera']
             
         data_len = internal_format['length']
 
@@ -82,20 +78,45 @@ class TransfuserDataset(BaseDataset):
                 continue
             used_cameras = self.config['used_cameras']
             camera_index = past_index//5
-            camera = [camera_data[i] for i in camera_index]
+
             command = [driving_command[i] for i in camera_index]
             sdc_past_feature = sdc_feature_t[:4]
             sdc_future_feature = sdc_feature_t[4:]
-
-            agent_input = get_agent_input(sdc_past_feature,command, camera,used_cameras)
-            features = {}
-            for builder in self._feature_builders:
-                features.update(builder.compute_features(agent_input))
+            features_render = {}
             for builder in self._target_builders:
-                features.update(builder.compute_targets(sdc_future_feature[:,:3]))
-            features['kalman_difficulty'] = 0
-            features['camera_path'] = camera[3]['CAM_F0']
-            results.append(features)
+                features_render.update(builder.compute_targets(sdc_future_feature[:,:3]))
+            camera = [camera_data_render[i] for i in camera_index]
+            agent_input = get_agent_input(sdc_past_feature, command, camera, used_cameras)
+
+            for builder in self._feature_builders:
+                features_render.update(builder.compute_features(agent_input))
+
+            features = {}
+            try:
+                camera = [camera_data_real[i] for i in camera_index]
+                agent_input = get_agent_input(sdc_past_feature, command, camera, used_cameras)
+                for builder in self._feature_builders:
+                    features.update(builder.compute_features(agent_input))
+
+                features_render['camera_feature_real'] = features['camera_feature']
+                features_render['real_valid_mask'] = True
+            except:
+                features_render['camera_feature_real'] = np.zeros_like(features_render['camera_feature'])
+                features_render['real_valid_mask'] = False
+
+            # visualize both
+
+            # real_cam = features_render['camera_feature_real'].transpose(1,2,0)
+            # synth_cam = features_render['camera_feature'].transpose(1,2,0)
+            # import matplotlib.pyplot as plt
+            # fig,ax = plt.subplots(1,2)
+            # ax[0].imshow(real_cam)
+            # ax[1].imshow(synth_cam)
+            # plt.show()
+
+            features_render['kalman_difficulty'] = 0
+            features_render['camera_path'] = camera[3]['CAM_F0']
+            results.append(features_render)
         return results
 
     def is_monotonic_trajectory(self, sdc_feature, history_frames=4, future_frames=8, dt=0.5, threshold=0.5):
@@ -163,6 +184,8 @@ class TransfuserDataset(BaseDataset):
         feature = {}
         target = {}
         feature['camera_feature'] = input_dict['camera_feature']
+        feature['camera_feature_real'] = input_dict['camera_feature_real']
+        feature['real_valid_mask'] = input_dict['real_valid_mask']
         feature['status_feature'] = input_dict['status_feature']
         target['trajectory'] = input_dict['trajectory']
         feature['camera_path'] = input_dict['camera_path']

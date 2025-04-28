@@ -16,6 +16,7 @@ from unitraj.utils.dataclasses import SensorConfig
 from unitraj.models.abstract_agent import AbstractFeatureBuilder, AbstractTargetBuilder
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 from torch import Tensor
 from typing import Dict, Tuple
 import wandb
@@ -44,6 +45,23 @@ class TransfuserLightningModule(pl.LightningModule):
         features, targets = batch
         prediction = self.agent.forward(features)
         loss = self.agent.compute_loss(features, targets, prediction)
+
+        real_valid_mask = features['real_valid_mask']
+        if real_valid_mask.any() and self.training:
+            real_camera_feature = features['camera_feature_real']
+            real_valid_camera = real_camera_feature[real_valid_mask]
+            features['camera_feature'] = real_valid_camera
+            features['status_feature'] = features['status_feature'][real_valid_mask]
+            prediction_real = self.agent.forward(features)
+            targets['trajectory'] = targets['trajectory'][real_valid_mask]
+            loss_real = self.agent.compute_loss(features, targets, prediction_real)
+
+            real_bev_feature = prediction_real['bev_feature']
+            render_bev_feature = prediction['bev_feature'][real_valid_mask]
+            loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
+
+            loss = loss + loss_real + loss_render
+
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()

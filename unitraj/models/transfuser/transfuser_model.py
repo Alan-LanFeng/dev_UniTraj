@@ -116,7 +116,7 @@ class TransfuserModel(nn.Module):
         output: Dict[str, torch.Tensor] = {}
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)
-
+        output["bev_feature"] = bev_feature
         # agents = self._agent_head(agents_query)
         # output.update(agents)
 
