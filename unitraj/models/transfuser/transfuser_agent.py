@@ -47,30 +47,38 @@ class TransfuserLightningModule(pl.LightningModule):
         loss = self.agent.compute_loss(features, targets, prediction)
 
         real_valid_mask = features['real_valid_mask']
-        if real_valid_mask.any() and self.training:
+        if real_valid_mask.any():
             real_camera_feature = features['camera_feature_real']
             real_valid_camera = real_camera_feature[real_valid_mask]
             features['camera_feature'] = real_valid_camera
             features['status_feature'] = features['status_feature'][real_valid_mask]
             prediction_real = self.agent.forward(features)
-            targets['trajectory'] = targets['trajectory'][real_valid_mask]
-            loss_real = self.agent.compute_loss(features, targets, prediction_real)
+            targets_copy = targets.copy()
+            targets_copy['trajectory'] = targets['trajectory'][real_valid_mask]
+            loss_real = self.agent.compute_loss(features, targets_copy, prediction_real)
 
             real_bev_feature = prediction_real['bev_feature']
             render_bev_feature = prediction['bev_feature'][real_valid_mask]
             loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
-
-            loss = loss + loss_real + loss_render
+            #loss = loss + loss_real + loss_render
+            loss = loss_real
+            self.log(f"{logging_prefix}/loss_real", loss_real, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log(f"{logging_prefix}/loss_render", loss_render, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
 
         camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
         ego_status = features['status_feature'][0].cpu().numpy()
         pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
         gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
 
-        ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
-        self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        if self.training:
+            ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
+            self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        else:
+            ade = torch.mean(torch.norm(prediction_real['trajectory'][...,:2] - targets_copy['trajectory'][...,:2], dim=-1))
+            self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         if self.global_step % 1000 == 0:
             # 创建图像

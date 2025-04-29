@@ -117,9 +117,10 @@ class BaseDataset(Dataset):
             for cnt, file_name in enumerate(data_list):
                 if worker_index == 0 and cnt % max(int(len(data_list) / 10), 1) == 0:
                     print(f'{cnt}/{len(data_list)} data processed', flush=True)
-                scenario = read_scenario(data_path, mapping, file_name)
+
 
                 try:
+                    scenario = read_scenario(data_path, mapping, file_name)
                     output = self.preprocess(scenario)
 
                     output = self.process(output)
