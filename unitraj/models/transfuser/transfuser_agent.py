@@ -43,28 +43,29 @@ class TransfuserLightningModule(pl.LightningModule):
         :return: scalar loss
         """
         features, targets = batch
+
+        real_valid_mask = features['real_valid_mask']
+        feature_render = features['camera_feature'][real_valid_mask].detach().clone()
+        status_render = features['status_feature'][real_valid_mask].detach().clone()
+
+        features['camera_feature'][real_valid_mask] = features['camera_feature_real'][real_valid_mask]
         prediction = self.agent.forward(features)
         loss = self.agent.compute_loss(features, targets, prediction)
 
-        real_valid_mask = features['real_valid_mask']
         if real_valid_mask.any():
-            real_camera_feature = features['camera_feature_real']
-            real_valid_camera = real_camera_feature[real_valid_mask]
-            features['camera_feature'] = real_valid_camera
-            features['status_feature'] = features['status_feature'][real_valid_mask]
-            prediction_real = self.agent.forward(features)
-            targets_copy = targets.copy()
-            targets_copy['trajectory'] = targets['trajectory'][real_valid_mask]
-            loss_real = self.agent.compute_loss(features, targets_copy, prediction_real)
-
-            real_bev_feature = prediction_real['bev_feature']
-            render_bev_feature = prediction['bev_feature'][real_valid_mask]
+            with torch.no_grad():
+                features['camera_feature']= feature_render
+                features['status_feature'] = status_render
+                prediction_render = self.agent.forward(features)
+                render_bev_feature = prediction_render['bev_feature']
+            real_bev_feature = prediction['bev_feature'][real_valid_mask]
             loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
-            #loss = loss + loss_real + loss_render
-            loss = loss_real
-            self.log(f"{logging_prefix}/loss_real", loss_real, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-            self.log(f"{logging_prefix}/loss_render", loss_render, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+            loss+=loss_render
+            self.log(f"{logging_prefix}/loss_render", loss_render, on_step=False, on_epoch=True, prog_bar=True,
+                     sync_dist=True)
 
+        ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
+        self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
 
@@ -72,13 +73,6 @@ class TransfuserLightningModule(pl.LightningModule):
         ego_status = features['status_feature'][0].cpu().numpy()
         pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
         gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
-
-        if self.training:
-            ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            ade = torch.mean(torch.norm(prediction_real['trajectory'][...,:2] - targets_copy['trajectory'][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         if self.global_step % 1000 == 0:
             # 创建图像
