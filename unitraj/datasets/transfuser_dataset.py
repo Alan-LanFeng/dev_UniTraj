@@ -45,10 +45,10 @@ class TransfuserDataset(BaseDataset):
 
 
         for current_index in range(15, data_len,5):
-            max_future_inex = current_index + 40
-            if max_future_inex >= data_len:
+            max_future_index = current_index + 40
+            if max_future_index >= data_len:
                 break
-            total_index = np.arange(current_index-15, max_future_inex+1, 5)
+            total_index = np.arange(current_index-15, max_future_index+1, 5)
             past_index = total_index[:4]
 
             sdc_feature_raw = sdc_feature[total_index].copy()
@@ -174,10 +174,10 @@ class TransfuserDataset(BaseDataset):
             if np.random.rand() > perturb_prob:
                 continue
             max_future_index = current_index + 40
-            if max_future_idnex >= data_len:
+            if max_future_index >= data_len:
                 break
 
-            total_index = np.arange(current_index-15, max_future_inex+1, 5)
+            total_index = np.arange(current_index-15, max_future_index+1, 5)
             past_index = total_index[:4]
 
             internal_format['tracks'][sdc_id]['state']['position'] = original_pos
