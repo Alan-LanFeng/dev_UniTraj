@@ -1,16 +1,15 @@
 model_name: transfuser
-use_synthetic_sensors: False
-use_real_sensors: True
+use_synthetic_sensors: true
 max_num_agents: 64
 trajectory_sample_interval: 5
 used_cameras: ['cam_f0','cam_r0','cam_l0']
 only_train_on_ego: True # only train on AV
-metric_monitor: 'val/loss' # metric to monitor for early stopping
+metric_monitor: 'val/ade' # metric to monitor for early stopping
+constant_velocity_threshold: 1.5
 
 
-
-train_batch_size: 1
-eval_batch_size: 1
+train_batch_size: 256
+eval_batch_size: 256
 max_epochs: 100
 learning_rate: 1e-4 # 0.00075 # 1e-3 for lanegcn
 learning_rate_sched: [ 10, 20, 30, 40, 50 ]
