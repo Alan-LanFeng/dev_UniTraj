@@ -6,7 +6,57 @@ import numpy as np
 import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Sampler
+import numpy as np
+from scipy.ndimage import gaussian_filter1d   # 仅用于平滑；可替换为自写卷积
 
+# ---------- 可调参数 ----------
+ALPHA_BLEND = 0.5          # 0=完全沿用旧 heading, 1=完全用位移朝向
+SMOOTH_STD  = 0.1            # Gaussian σ (frames) for heading smoothing
+DT          = 0.1          # log 帧间隔 (s)
+# -----------------------------
+def normalize_angle(angle):
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+def wrap_angle(a):
+    """把角度 wrap 到 (-π, π]"""
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+def perturb_positions(pos, center_idx, dx, dy, std=2):
+    """仅扰动 position 的 (x,y)，再高斯平滑时序"""
+    perturbed = pos.copy()
+    perturbed[center_idx, :2] += np.array([dx, dy])
+    for dim in range(2):   # 只对 x,y 做平滑；z 不变
+        perturbed[:, dim] = gaussian_filter1d(
+            perturbed[:, dim], sigma=std, mode='nearest')
+    return perturbed
+
+def derive_heading_from_positions(pos):
+    """中心差分得到 heading_raw，首尾用前/后向差分代替"""
+    # Δp(t) = p(t+1) - p(t-1)
+    delta = np.zeros_like(pos[:, :2])
+    delta[1:-1] = pos[2:, :2] - pos[:-2, :2]
+    delta[0]    = pos[1, :2] - pos[0, :2]
+    delta[-1]   = pos[-1, :2] - pos[-2, :2]
+    heading_raw = np.arctan2(delta[:, 1], delta[:, 0])
+    return heading_raw
+
+def blend_and_smooth_heading(heading_old, heading_raw, alpha=ALPHA_BLEND, std=SMOOTH_STD):
+    """加权融合 + 高斯平滑（在 sin/cos 空间）"""
+    # 加权
+    heading_new = wrap_angle((1 - alpha) * heading_old + alpha * heading_raw)
+
+    # 转到 sin/cos, 再平滑
+    sin_h = np.sin(heading_new)
+    cos_h = np.cos(heading_new)
+    sin_h = gaussian_filter1d(sin_h, sigma=std, mode='nearest')
+    cos_h = gaussian_filter1d(cos_h, sigma=std, mode='nearest')
+    heading_smoothed = np.arctan2(sin_h, cos_h)
+    return heading_smoothed
+
+def recompute_velocity(pos, dt=DT):
+    vel = np.zeros((pos.shape[0], 2), dtype=pos.dtype)
+    vel[:-1] = (pos[1:, :2] - pos[:-1, :2]) / dt
+    vel[-1]  = vel[-2]
+    return vel
 
 def is_ddp():
     return "WORLD_SIZE" in os.environ

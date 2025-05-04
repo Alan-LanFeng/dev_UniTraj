@@ -251,7 +251,10 @@ camera_params = {'CAM_F0': {'distortion': array([-0.356123,  0.172545, -0.00213 
 
 
 def load_camera_image(image_path):
-    return np.array(Image.open(image_path))
+    if type(image_path) == np.ndarray:
+        return image_path
+    else:
+         return np.array(Image.open(image_path))
 
 def load_pcd_file(pcd_path):
     lidar = o3d.io.read_point_cloud(pcd_path)

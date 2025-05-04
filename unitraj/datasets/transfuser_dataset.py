@@ -1,9 +1,12 @@
 from .base_dataset import BaseDataset
 from unitraj.utils.dataclasses import get_agent_input
+from unitraj.datasets.common_utils import perturb_positions,derive_heading_from_positions,blend_and_smooth_heading , recompute_velocity, normalize_angle
 import numpy as np
 from unitraj.models.transfuser.transfuser_features import TransfuserFeatureBuilder,TransfuserTargetBuilder
 from unitraj.models.transfuser.transfuser_config import TransfuserConfig
 import torch
+from unitraj.utils.renderer import ScenarioRenderer, save_as_video
+
 import os
 
 class TransfuserDataset(BaseDataset):
@@ -11,6 +14,7 @@ class TransfuserDataset(BaseDataset):
     def __init__(self, config=None, is_validation=False):
         self._feature_builders = [TransfuserFeatureBuilder(TransfuserConfig)]
         self._target_builders = [TransfuserTargetBuilder(TransfuserConfig)]
+        self.renderer = ScenarioRenderer()
         super().__init__(config, is_validation)
 
 
@@ -46,16 +50,12 @@ class TransfuserDataset(BaseDataset):
                 break
             total_index = np.arange(current_index-15, max_future_inex+1, 5)
             past_index = total_index[:4]
-            future_index = total_index[4:]
 
             sdc_feature_raw = sdc_feature[total_index].copy()
             sdc_pos, sdc_heading, sdc_vel, sdc_acce = sdc_feature_raw[:, :2], sdc_feature_raw[:, 2:3], sdc_feature_raw[:, 3:5], sdc_feature_raw[:, 5:]
 
             # Normalize position by translating to the origin (t=0)
             sdc_pos_norm = sdc_pos - sdc_pos[3]  # shape (T, 2)
-
-            def normalize_angle(angle):
-                return (angle + np.pi) % (2 * np.pi) - np.pi
 
             sdc_heading_norm = normalize_angle(sdc_heading - sdc_heading[3])  # shape (T,)
 
@@ -103,21 +103,10 @@ class TransfuserDataset(BaseDataset):
             except:
                 features_render['camera_feature_real'] = np.zeros_like(features_render['camera_feature'])
                 features_render['real_valid_mask'] = False
-
-            # visualize both
-
-            # real_cam = features_render['camera_feature_real'].transpose(1,2,0)
-            # synth_cam = features_render['camera_feature'].transpose(1,2,0)
-            # import matplotlib.pyplot as plt
-            # fig,ax = plt.subplots(1,2)
-            # ax[0].imshow(real_cam)
-            # ax[1].imshow(synth_cam)
-            # plt.show()
-
-            features_render['kalman_difficulty'] = 0
-            features_render['camera_path'] = camera[3]['CAM_F0']
+            #features_render['camera_path'] = camera[3]['CAM_F0']
             results.append(features_render)
-        return results
+
+        return internal_format, results
 
     def is_monotonic_trajectory(self, sdc_feature, history_frames=4, future_frames=8, dt=0.5, threshold=0.5):
         """
@@ -159,9 +148,140 @@ class TransfuserDataset(BaseDataset):
         mean_error = np.mean(errors)
 
         return mean_error < threshold
-    def postprocess(self, data):
 
-        return data
+    def postprocess(self, data):
+        internal_format, results = data
+        #return results
+        # from tqdm import tqdm
+        # img_list = []
+        # for i in tqdm(range(0, 200, 5)):
+        #     img_dict = self.renderer.observe(internal_format, i)
+        #     img_list.append(img_dict)
+        # save_as_video(img_list, f"output_before.mp4")
+
+        sdc_id = internal_format['metadata']['sdc_id']
+        tracks = internal_format['tracks']
+        sdc_track = tracks[sdc_id]
+
+        original_pos = sdc_track['state']['position'].copy() # (N,3)
+        original_heading = sdc_track['state']['heading'].copy()  # (N,)
+        original_velocity = sdc_track['state']['velocity'].copy()  # (N,3)
+        data_len = original_pos.shape[0]
+        driving_command = internal_format['driving_command']
+        perturb_scale = self.config['perturb_scale']
+        perturb_prob = self.config['perturb_prob']
+        for current_index in range(15, data_len, 5):
+            if np.random.rand() > perturb_prob:
+                continue
+            max_future_index = current_index + 40
+            if max_future_idnex >= data_len:
+                break
+
+            total_index = np.arange(current_index-15, max_future_inex+1, 5)
+            past_index = total_index[:4]
+
+            internal_format['tracks'][sdc_id]['state']['position'] = original_pos
+            internal_format['tracks'][sdc_id]['state']['heading'] = original_heading
+            internal_format['tracks'][sdc_id]['state']['velocity'] = original_velocity
+            dx = np.random.normal(0.0, perturb_scale)  # 纵向
+            dy = np.random.normal(0.0, perturb_scale)  # 横向
+            perturbed_pos = perturb_positions(original_pos, current_index, dx, dy, std=10)
+            heading_raw = derive_heading_from_positions(perturbed_pos)
+            perturbed_heading = blend_and_smooth_heading(original_heading, heading_raw)
+            perturbed_velocity = recompute_velocity(perturbed_pos)
+
+            sdc_pos = perturbed_pos[:,:2]
+            sdc_heading = perturbed_heading[:, np.newaxis]
+            sdc_vel = perturbed_velocity
+            sdc_acce = np.zeros_like(sdc_vel)
+            sdc_acce[1:] = (sdc_vel[1:] - sdc_vel[:-1]) / 0.1
+            sdc_acce[0] = sdc_acce[1]
+            sdc_feature = np.concatenate([sdc_pos, sdc_heading, sdc_vel, sdc_acce], axis=-1)
+            sdc_feature_raw = sdc_feature[total_index]
+
+            sdc_pos, sdc_heading, sdc_vel, sdc_acce = sdc_feature_raw[:, :2], sdc_feature_raw[:, 2:3], sdc_feature_raw[:, 3:5], sdc_feature_raw[:, 5:]
+            # Normalize position by translating to the origin (t=0)
+            sdc_pos_norm = sdc_pos - sdc_pos[3]  # shape (T, 2)
+
+            sdc_heading_norm = normalize_angle(sdc_heading - sdc_heading[3])  # shape (T,)
+
+            # Get rotation matrix to align to heading at t=0
+            theta0 = sdc_heading[3, 0]
+            cos_t, sin_t = np.cos(-theta0), np.sin(-theta0)
+            R = np.array([[cos_t, -sin_t],
+                          [sin_t, cos_t]])  # shape (2, 2)
+
+            # Rotate position, velocity, acceleration into ego frame at t=0
+            sdc_pos_norm = sdc_pos_norm @ R.T  # shape (T, 2)
+            sdc_vel_rot = sdc_vel @ R.T  # shape (T, 2)
+            sdc_acce_rot = sdc_acce @ R.T  # shape (T, 2)
+
+            # Rebuild feature: pos (normalized), heading (normalized), vel (rotated), acc (rotated)
+            sdc_feature_t = np.concatenate([sdc_pos_norm, sdc_heading_norm, sdc_vel_rot, sdc_acce_rot], axis=-1)
+
+            is_monotonic = self.is_monotonic_trajectory(sdc_feature_t,
+                                                        threshold=self.config['constant_velocity_threshold'])
+            if is_monotonic:
+                continue
+
+            internal_format['tracks'][sdc_id]['state']['position'] = perturbed_pos
+            internal_format['tracks'][sdc_id]['state']['heading'] = perturbed_heading
+            internal_format['tracks'][sdc_id]['state']['velocity'] = perturbed_velocity
+            img_dict = self.renderer.observe(internal_format, current_index)
+
+            used_cameras = self.config['used_cameras']
+            camera_index = past_index//5
+
+            command = [driving_command[i] for i in camera_index]
+            sdc_past_feature = sdc_feature_t[:4]
+            sdc_future_feature = sdc_feature_t[4:]
+            features_render = {}
+
+            for builder in self._target_builders:
+                features_render.update(builder.compute_targets(sdc_future_feature[:,:3]))
+            dummy_camera = {}
+            for k,v in img_dict.items():
+                dummy_camera[k] = None
+            camera = [img_dict, img_dict, img_dict, img_dict]
+            agent_input = get_agent_input(sdc_past_feature, command, camera, used_cameras)
+
+            for builder in self._feature_builders:
+                features_render.update(builder.compute_features(agent_input))
+
+            features_render['camera_feature_real'] = np.zeros_like(features_render['camera_feature'])
+            features_render['real_valid_mask'] = False
+            results.append(features_render)
+
+            #
+            # import matplotlib.pyplot as plt
+            # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+            # camera = features_render['camera_feature'].transpose(1, 2, 0)
+            # ego_status = features_render['status_feature']
+            # input_traj = sdc_past_feature[:, :2]
+            # gt_traj = features_render['trajectory'][:, :2]
+            # ax1.imshow(camera)
+            # ax1.set_title("Camera View")
+            # ax1.axis('off')
+            #
+            # status_text = "\n".join([f"{i}: {v:.2f}" for i, v in enumerate(ego_status)])
+            # props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+            # ax1.text(5, 20, status_text, fontsize=10, verticalalignment='top', bbox=props)
+            #
+            # ax2.plot(input_traj[:, 0], input_traj[:, 1], 'ro-', label="Input Trajectory")
+            # ax2.plot(gt_traj[:, 0], gt_traj[:, 1], 'go-', label="Ground Truth Trajectory")
+            #
+            # for i in range(len(gt_traj)):
+            #     ax2.annotate(str(i), (gt_traj[i, 0], gt_traj[i, 1]), color='green')
+            #
+            # ax2.set_title("Trajectory")
+            # ax2.set_xlabel("X")
+            # ax2.set_ylabel("Y")
+            # ax2.legend()
+            # ax2.grid(True)
+            # ax2.axis('equal')  # 保持坐标轴比例一致
+            # plt.show()
+            # print()
+        return results
 
     def collate_fn(self, data_list):
         batch_list = []
@@ -188,125 +308,7 @@ class TransfuserDataset(BaseDataset):
         feature['real_valid_mask'] = input_dict['real_valid_mask']
         feature['status_feature'] = input_dict['status_feature']
         target['trajectory'] = input_dict['trajectory']
-        feature['camera_path'] = input_dict['camera_path']
+        #feature['camera_path'] = input_dict['camera_path']
         #batch_dict = {'batch_size': batch_size, 'input_dict': input_dict, 'batch_sample_count': batch_size}
         return (feature, target)
 
-    def get_agent_data(
-            self, center_objects, obj_trajs_past, obj_trajs_future, track_index_to_predict, sdc_track_index, timestamps,
-            obj_types
-    ):
-
-        num_center_objects = center_objects.shape[0]
-        num_objects, num_timestamps, box_dim = obj_trajs_past.shape
-        obj_trajs = self.transform_trajs_to_center_coords(
-            obj_trajs=obj_trajs_past,
-            center_xyz=center_objects[:, 0:3],
-            center_heading=center_objects[:, 6],
-            heading_index=6, rot_vel_index=[7, 8]
-        )
-
-        object_onehot_mask = np.zeros((num_center_objects, num_objects, num_timestamps, 5))
-        object_onehot_mask[:, obj_types == 1, :, 0] = 1
-        object_onehot_mask[:, obj_types == 2, :, 1] = 1
-        object_onehot_mask[:, obj_types == 3, :, 2] = 1
-        object_onehot_mask[np.arange(num_center_objects), track_index_to_predict, :, 3] = 1
-        object_onehot_mask[:, sdc_track_index, :, 4] = 1
-
-        object_time_embedding = np.zeros((num_center_objects, num_objects, num_timestamps, num_timestamps + 1))
-        for i in range(num_timestamps):
-            object_time_embedding[:, :, i, i] = 1
-        object_time_embedding[:, :, :, -1] = timestamps
-
-        object_heading_embedding = np.zeros((num_center_objects, num_objects, num_timestamps, 2))
-        object_heading_embedding[:, :, :, 0] = np.sin(obj_trajs[:, :, :, 6])
-        object_heading_embedding[:, :, :, 1] = np.cos(obj_trajs[:, :, :, 6])
-
-        vel = obj_trajs[:, :, :, 7:9]
-        vel_pre = np.roll(vel, shift=1, axis=2)
-        acce = (vel - vel_pre) / 0.1
-        acce[:, :, 0, :] = acce[:, :, 1, :]
-
-        obj_trajs_data = np.concatenate([
-            obj_trajs[:, :, :, 0:6],
-            object_onehot_mask,
-            object_time_embedding,
-            object_heading_embedding,
-            obj_trajs[:, :, :, 7:9],
-            acce,
-        ], axis=-1)
-
-        obj_trajs_mask = obj_trajs[:, :, :, -1]
-        obj_trajs_data[obj_trajs_mask == 0] = 0
-
-        obj_trajs_future = obj_trajs_future.astype(np.float32)
-        obj_trajs_future = self.transform_trajs_to_center_coords(
-            obj_trajs=obj_trajs_future,
-            center_xyz=center_objects[:, 0:3],
-            center_heading=center_objects[:, 6],
-            heading_index=6, rot_vel_index=[7, 8]
-        )
-
-        obj_trajs_future_state = obj_trajs_future[:, :, :, [0, 1, 6]]
-        #normalize the heading, last axis, to pi,-pi
-        obj_trajs_future_state[:, :, :, 2] = np.arctan2(np.sin(obj_trajs_future_state[:, :, :, 2]),np.cos(obj_trajs_future_state[:, :, :, 2]))
-
-        obj_trajs_future_mask = obj_trajs_future[:, :, :, -1]
-        obj_trajs_future_state[obj_trajs_future_mask == 0] = 0
-
-        center_obj_idxs = np.arange(len(track_index_to_predict))
-        center_gt_trajs = obj_trajs_future_state[center_obj_idxs, track_index_to_predict]
-        center_gt_trajs_mask = obj_trajs_future_mask[center_obj_idxs, track_index_to_predict]
-        center_gt_trajs[center_gt_trajs_mask == 0] = 0
-
-        assert obj_trajs_past.__len__() == obj_trajs_data.shape[1]
-        valid_past_mask = np.logical_not(obj_trajs_past[:, :, -1].sum(axis=-1) == 0)
-
-        obj_trajs_mask = obj_trajs_mask[:, valid_past_mask]
-        obj_trajs_data = obj_trajs_data[:, valid_past_mask]
-        obj_trajs_future_state = obj_trajs_future_state[:, valid_past_mask]
-        obj_trajs_future_mask = obj_trajs_future_mask[:, valid_past_mask]
-
-        obj_trajs_pos = obj_trajs_data[:, :, :, 0:3]
-        num_center_objects, num_objects, num_timestamps, _ = obj_trajs_pos.shape
-        obj_trajs_last_pos = np.zeros((num_center_objects, num_objects, 3), dtype=np.float32)
-        for k in range(num_timestamps):
-            cur_valid_mask = obj_trajs_mask[:, :, k] > 0
-            obj_trajs_last_pos[cur_valid_mask] = obj_trajs_pos[:, :, k, :][cur_valid_mask]
-
-        center_gt_final_valid_idx = np.zeros((num_center_objects), dtype=np.float32)
-        for k in range(center_gt_trajs_mask.shape[1]):
-            cur_valid_mask = center_gt_trajs_mask[:, k] > 0
-            center_gt_final_valid_idx[cur_valid_mask] = k
-
-        max_num_agents = self.config['max_num_agents']
-        object_dist_to_center = np.linalg.norm(obj_trajs_data[:, :, -1, 0:2], axis=-1)
-
-        object_dist_to_center[obj_trajs_mask[..., -1] == 0] = 1e10
-        topk_idxs = np.argsort(object_dist_to_center, axis=-1)[:, :max_num_agents]
-
-        topk_idxs = np.expand_dims(topk_idxs, axis=-1)
-        topk_idxs = np.expand_dims(topk_idxs, axis=-1)
-
-        obj_trajs_data = np.take_along_axis(obj_trajs_data, topk_idxs, axis=1)
-        obj_trajs_mask = np.take_along_axis(obj_trajs_mask, topk_idxs[..., 0], axis=1)
-        obj_trajs_pos = np.take_along_axis(obj_trajs_pos, topk_idxs, axis=1)
-        obj_trajs_last_pos = np.take_along_axis(obj_trajs_last_pos, topk_idxs[..., 0], axis=1)
-        obj_trajs_future_state = np.take_along_axis(obj_trajs_future_state, topk_idxs, axis=1)
-        obj_trajs_future_mask = np.take_along_axis(obj_trajs_future_mask, topk_idxs[..., 0], axis=1)
-        track_index_to_predict_new = np.zeros(len(track_index_to_predict), dtype=np.int64)
-
-        obj_trajs_data = np.pad(obj_trajs_data, ((0, 0), (0, max_num_agents - obj_trajs_data.shape[1]), (0, 0), (0, 0)))
-        obj_trajs_mask = np.pad(obj_trajs_mask, ((0, 0), (0, max_num_agents - obj_trajs_mask.shape[1]), (0, 0)))
-        obj_trajs_pos = np.pad(obj_trajs_pos, ((0, 0), (0, max_num_agents - obj_trajs_pos.shape[1]), (0, 0), (0, 0)))
-        obj_trajs_last_pos = np.pad(obj_trajs_last_pos,
-                                    ((0, 0), (0, max_num_agents - obj_trajs_last_pos.shape[1]), (0, 0)))
-        obj_trajs_future_state = np.pad(obj_trajs_future_state,
-                                        ((0, 0), (0, max_num_agents - obj_trajs_future_state.shape[1]), (0, 0), (0, 0)))
-        obj_trajs_future_mask = np.pad(obj_trajs_future_mask,
-                                       ((0, 0), (0, max_num_agents - obj_trajs_future_mask.shape[1]), (0, 0)))
-
-        return (obj_trajs_data, obj_trajs_mask.astype(bool), obj_trajs_pos, obj_trajs_last_pos,
-                obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs, center_gt_trajs_mask,
-                center_gt_final_valid_idx,
-                track_index_to_predict_new)

@@ -141,8 +141,7 @@ class BaseDataset(Dataset):
                             value = np.bytes_(value)
                         grp.create_dataset(key, data=value)
                     file_info = {}
-                    kalman_difficulty = np.stack([x['kalman_difficulty'] for x in output])
-                    file_info['kalman_difficulty'] = kalman_difficulty
+
                     file_info['h5_path'] = hdf5_path
                     file_list[grp_name] = file_info
                 del scenario
