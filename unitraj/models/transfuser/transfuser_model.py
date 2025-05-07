@@ -97,9 +97,8 @@ class TransfuserModel(nn.Module):
 
         batch_size = status_feature.shape[0]
 
-        bev_feature_upscale, bev_feature, _ = self._backbone(camera_feature, lidar_feature)
-
-        bev_feature = self._bev_downscale(bev_feature).flatten(-2, -1)
+        bev_feature_upscale, bev_feature_raw, _ = self._backbone(camera_feature, lidar_feature)
+        bev_feature = self._bev_downscale(bev_feature_raw).flatten(-2, -1)
         bev_feature = bev_feature.permute(0, 2, 1)
         status_encoding = self._status_encoding(status_feature)
 
@@ -117,6 +116,8 @@ class TransfuserModel(nn.Module):
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)
         output["bev_feature"] = bev_feature
+        output["bev_feature_raw"] = bev_feature_raw
+        output["bev_feature_upscale"] = bev_feature_upscale
         # agents = self._agent_head(agents_query)
         # output.update(agents)
 

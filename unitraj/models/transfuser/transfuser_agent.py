@@ -21,7 +21,176 @@ from torch import Tensor
 from typing import Dict, Tuple
 import wandb
 
+import torch.nn as nn
+from torch.autograd import Function
 
+
+class GradientReversalFunction(Function):
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.neg() * ctx.lambda_, None
+
+def grl(x, lambda_=1.0):
+
+    return GradientReversalFunction.apply(x, lambda_)
+    
+class DomainDiscriminator(nn.Module):
+    def __init__(self,
+                 in_channels=512,
+                 hidden_dim=256,
+                 feature_size=(8, 8),
+                 num_groups=32,
+                 num_layers=4):
+
+        super(DomainDiscriminator, self).__init__()
+        H, W = feature_size
+        # build a stack of convolutional blocks
+        self.blocks = nn.ModuleList()
+        for i in range(num_layers):
+            in_ch = in_channels if i == 0 else hidden_dim
+            self.blocks.append(nn.Sequential(
+                nn.Conv2d(in_ch, hidden_dim,
+                          kernel_size=3, stride=1, padding=1, bias=False),
+                nn.GroupNorm(num_groups, hidden_dim),
+                nn.ReLU(inplace=True)
+            ))
+        # final classifier: flatten all features → 1 logit
+        self.classifier = nn.Linear(hidden_dim * H * W, 1)
+        # internal loss
+        self.criterion = nn.BCEWithLogitsLoss()
+
+    def forward(self, sr_feat: torch.Tensor, tg_feat: torch.Tensor,
+                lambda_grl: float = 1.0):
+
+
+        bs_src = sr_feat.size(0)
+        bs_tgt = tg_feat.size(0)
+        domain_labels = torch.cat([
+            torch.zeros(bs_src, 1, device=sr_feat.device),
+            torch.ones (bs_tgt, 1, device=sr_feat.device)
+        ], dim=0)
+
+        x = torch.cat([sr_feat, tg_feat], dim=0)
+
+        x = grl(x, lambda_grl)
+        for block in self.blocks:
+            x = block(x)
+
+        x = x.view(x.size(0), -1)
+  
+        logits = self.classifier(x)
+
+        loss = self.criterion(logits, domain_labels)
+
+
+        # logits_src = logits[:bs_src]
+        # logits_tgt = logits[bs_src:]
+        return loss
+
+
+class PearsonCorrLoss4D(nn.Module):
+
+
+    def __init__(self, eps: float = 1e-8, mode: str = 'global', reduction: str = 'mean'):
+
+        super().__init__()
+        assert mode in ('global', 'channel')
+        assert reduction in ('mean', 'sum', 'none')
+        self.eps = eps
+        self.mode = mode
+        self.reduction = reduction
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+
+        B, C, H, W = x.shape
+        if self.mode == 'global':
+            # Flatten to (B, C*H*W)
+            xf = x.view(B, -1)
+            yf = y.view(B, -1)
+
+            # Subtract mean
+            mx = xf.mean(dim=1, keepdim=True)
+            my = yf.mean(dim=1, keepdim=True)
+            xm = xf - mx
+            ym = yf - my
+
+            # Covariance and standard deviations
+            cov = (xm * ym).sum(dim=1) / (C*H*W)
+            sx = torch.sqrt((xm**2).sum(dim=1) + self.eps)
+            sy = torch.sqrt((ym**2).sum(dim=1) + self.eps)
+
+            # Pearson r and loss
+            r = cov / (sx * sy + self.eps)    # shape: (B,)
+            loss = 1 - r                      # shape: (B,)
+
+        else:  # channel‐wise
+            # Flatten spatial dims to (B, C, H*W)
+            xf = x.view(B, C, -1)
+            yf = y.view(B, C, -1)
+
+            # Subtract per‐channel mean
+            mx = xf.mean(dim=2, keepdim=True)  # (B, C, 1)
+            my = yf.mean(dim=2, keepdim=True)
+            xm = xf - mx
+            ym = yf - my
+
+            # Covariance and std per channel
+            cov = (xm * ym).sum(dim=2) / (H * W)   # (B, C)
+            sx = torch.sqrt((xm**2).sum(dim=2) + self.eps)  # (B, C)
+            sy = torch.sqrt((ym**2).sum(dim=2) + self.eps)  # (B, C)
+
+            r = cov / (sx * sy + self.eps)         # (B, C)
+            loss = 1 - r                           # (B, C)
+
+            # Average over channels → (B,)
+            loss = loss.mean(dim=1)
+
+        # Reduction over batch
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss  # shape: (B,)
+
+class ProjHead(nn.Module):
+
+    def __init__(self, in_channels=384, out_channels=512):
+        super().__init__()
+        # First conv: downsample 64→32, expand channels 384→512
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels,
+            kernel_size=3, stride=2, padding=1, bias=True
+        )
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels,
+            kernel_size=3, stride=2, padding=1, bias=True
+        )
+        self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.relu = nn.ReLU(inplace=True)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, x):
+        # x: [B, 384, 64, 64]
+        x = self.conv1(x)   # [B, 512, 32, 32]
+        x = self.relu(x)
+
+        x = self.conv2(x)   # [B, 512, 16, 16]
+        x = self.relu(x)
+
+        x = self.pool(x)    # [B, 512,  8,  8]
+        return x
 
 class TransfuserLightningModule(pl.LightningModule):
     """Pytorch lightning wrapper for learnable agent."""
@@ -34,6 +203,34 @@ class TransfuserLightningModule(pl.LightningModule):
         super().__init__()
 
         self.agent = TransfuserAgent(config)
+
+        self.use_dino_feat = config.get('use_dino_feat', False)
+        self.distil_loss_weight = config.get('distill_loss_weight', 1.0)
+        self.use_adv = config.get('use_adv', False)
+
+        if self.use_dino_feat:
+            self.proj_head = ProjHead(384, 512)
+            self.fm_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+        if self.use_adv: # Unfinished no gpu
+            self.domain_discriminator = DomainDiscriminator(
+                in_channels=512,
+                hidden_dim=256, 
+                feature_size=(8, 8), 
+                num_groups=32, 
+                num_layers=4)
+            self.lambda_grl = config.get('lambda_grl', 0.1)
+        
+        self.distill_loss_type = config.get('distill_loss_type', 'mse')
+        if self.distill_loss_type == 'mse':
+            self.ditill_loss = nn.MSELoss()
+        elif self.distill_loss_type == 'l1':
+            self.ditill_loss = nn.L1Loss()
+        elif self.distill_loss_type == 'pearson':
+            self.ditill_loss = PearsonCorrLoss4D(mode='global', reduction='mean')
+        else:
+            raise ValueError(f"Unknown distillation loss: {self.distil_loss}")
+        
+
 
     def _step(self, batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]], logging_prefix: str) -> Tensor:
         """
@@ -56,15 +253,37 @@ class TransfuserLightningModule(pl.LightningModule):
         ego_status = features['status_feature'][0].cpu().numpy()
         pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
         gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
+        
 
         if real_valid_mask.any():
             with torch.no_grad():
-                features['camera_feature']= feature_render
-                features['status_feature'] = status_render
-                prediction_render = self.agent.forward(features)
-                render_bev_feature = prediction_render['bev_feature']
-            real_bev_feature = prediction['bev_feature'][real_valid_mask]
-            loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
+                if self.use_dino_feat:
+                    features['camera_feature'] = feature_render
+                    features['status_feature'] = status_render
+                    camera_img = features['camera_feature']
+                    dino_feat = self.fm_model.get_intermediate_layers(F.interpolate(camera_img, size=(896, 896), mode="bilinear"), reshape=True)[0] # TODO check interplot; [41, 384, 64, 64]
+                            
+                else:
+                    features['camera_feature'] = feature_render
+                    features['status_feature'] = status_render
+                    prediction_render = self.agent.forward(features)
+                    render_bev_feature = prediction_render['bev_feature']
+
+
+            if self.use_dino_feat:
+                render_bev_feature = self.proj_head(dino_feat.detach()) # [41, 512, 8, 8] 
+                real_bev_feature = prediction['bev_feature_raw'][real_valid_mask]
+            else:
+                real_bev_feature = prediction['bev_feature'][real_valid_mask]
+
+            if self.distill_loss_type == 'pearson': # TODO fix bug
+                render_bev_feature = prediction_render['bev_feature_raw'][real_valid_mask]
+                real_bev_feature = prediction['bev_feature_raw'][real_valid_mask]
+
+            
+            loss_render = self.ditill_loss(render_bev_feature, real_bev_feature)
+
+
             ade_real = torch.mean(torch.norm(prediction['trajectory'][real_valid_mask][...,:2] - targets['trajectory'][real_valid_mask][...,:2], dim=-1))
             self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
             loss+=loss_render
