@@ -43,46 +43,38 @@ class TransfuserLightningModule(pl.LightningModule):
         :return: scalar loss
         """
         features, targets = batch
-
         real_valid_mask = features['real_valid_mask']
-        feature_render = features['camera_feature'][real_valid_mask].detach().clone()
-        status_render = features['status_feature'][real_valid_mask].detach().clone()
+        real_camera_feature = features['camera_feature_real']
 
-        features['camera_feature'][real_valid_mask] = features['camera_feature_real'][real_valid_mask]
-        prediction = self.agent.forward(features)
-        loss = self.agent.compute_loss(features, targets, prediction)
+        prediction_render = self.agent.forward(features,real=False)
+        loss = self.agent.compute_loss(features, targets, prediction_render)
 
-        camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
-        ego_status = features['status_feature'][0].cpu().numpy()
-        pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
-        gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
+        ade_render = torch.mean(torch.norm(prediction_render['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
+        self.log(f"{logging_prefix}/ade_render", ade_render, batch_size=real_valid_mask.shape[0], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         if real_valid_mask.any():
-            with torch.no_grad():
-                features['camera_feature']= feature_render
-                features['status_feature'] = status_render
-                prediction_render = self.agent.forward(features)
-                render_bev_feature = prediction_render['bev_feature']
-            real_bev_feature = prediction['bev_feature'][real_valid_mask]
-            loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
-            ade_real = torch.mean(torch.norm(prediction['trajectory'][real_valid_mask][...,:2] - targets['trajectory'][real_valid_mask][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+            real_input = {}
+            target_real = {}
+            real_camera_feature = real_camera_feature[real_valid_mask]
+            real_input['camera_feature'] = real_camera_feature
+            real_input['status_feature'] = features['status_feature'][real_valid_mask]
+            prediction_real = self.agent.forward(real_input)
+            real_traj = targets['trajectory'][real_valid_mask]
+            target_real['trajectory'] = real_traj
+            loss += self.agent.compute_loss(features, target_real, prediction_real)
+            bev_feature_render = prediction_render['bev_feature'][real_valid_mask]
+            loss_render = F.mse_loss(bev_feature_render, prediction_real['bev_feature'])
             loss+=loss_render
+            ade_real = torch.mean(torch.norm(prediction_real['trajectory'] -target_real['trajectory'], dim=-1))
+            self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
             self.log(f"{logging_prefix}/loss_render", loss_render, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True,
                      sync_dist=True)
-        render_mask = ~real_valid_mask
-        if render_mask.any():
-            ade_render = torch.mean(torch.norm(prediction['trajectory'][render_mask][...,:2] - targets['trajectory'][render_mask][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade_render", ade_render, batch_size=render_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
-        self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-
 
         # camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
         # ego_status = features['status_feature'][0].cpu().numpy()
-        # pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
+        # pred_traj = prediction_render['trajectory'][0].detach().cpu().numpy()[:, :2]
         # gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
 
         if self.global_step % 1000 == 0 and False:
@@ -205,9 +197,9 @@ class TransfuserAgent(AbstractAgent):
         """Inherited, see superclass."""
         return [TransfuserFeatureBuilder(config=self._config)]
 
-    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, features: Dict[str, torch.Tensor],real=True) -> Dict[str, torch.Tensor]:
         """Inherited, see superclass."""
-        return self._transfuser_model(features)
+        return self._transfuser_model(features,real=True)
 
     def compute_loss(
         self,

@@ -27,8 +27,8 @@ class TransfuserModel(nn.Module):
         ]
 
         self._config = config
-        self._backbone = TransfuserBackbone(config)
-
+        self._backbone_real = TransfuserBackbone(config)
+        self._backbone_render = TransfuserBackbone(config)
         self._keyval_embedding = nn.Embedding(8**2 + 1, config.tf_d_model)  # 8x8 feature grid + trajectory
         self._query_embedding = nn.Embedding(sum(self._query_splits), config.tf_d_model)
 
@@ -85,7 +85,7 @@ class TransfuserModel(nn.Module):
             d_model=config.tf_d_model,
         )
 
-    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, features: Dict[str, torch.Tensor],real=True) -> Dict[str, torch.Tensor]:
         """Torch module forward pass."""
 
         camera_feature: torch.Tensor = features["camera_feature"]
@@ -96,8 +96,10 @@ class TransfuserModel(nn.Module):
         status_feature: torch.Tensor = features["status_feature"]
 
         batch_size = status_feature.shape[0]
-
-        bev_feature_upscale, bev_feature, _ = self._backbone(camera_feature, lidar_feature)
+        if real:
+            bev_feature_upscale, bev_feature, _ = self._backbone_real(camera_feature, lidar_feature)
+        else:
+            bev_feature_upscale, bev_feature, _ = self._backbone_render(camera_feature, lidar_feature)
 
         bev_feature = self._bev_downscale(bev_feature).flatten(-2, -1)
         bev_feature = bev_feature.permute(0, 2, 1)
