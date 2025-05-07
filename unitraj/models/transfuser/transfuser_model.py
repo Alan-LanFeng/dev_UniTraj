@@ -78,7 +78,8 @@ class TransfuserModel(nn.Module):
         #     d_ffn=config.tf_d_ffn,
         #     d_model=config.tf_d_model,
         # )
-
+        self.norm_real = nn.GroupNorm(32, 512)
+        self.norm_render = nn.GroupNorm(32, 512)
         self._trajectory_head = TrajectoryHead(
             num_poses=trajectory_sampling.num_poses,
             d_ffn=config.tf_d_ffn,
@@ -98,9 +99,10 @@ class TransfuserModel(nn.Module):
         batch_size = status_feature.shape[0]
         if real:
             bev_feature_upscale, bev_feature, _ = self._backbone_real(camera_feature, lidar_feature)
+            bev_feature = self.norm_real(bev_feature)
         else:
             bev_feature_upscale, bev_feature, _ = self._backbone_render(camera_feature, lidar_feature)
-
+            bev_feature = self.norm_render(bev_feature)
         bev_feature = self._bev_downscale(bev_feature).flatten(-2, -1)
         bev_feature = bev_feature.permute(0, 2, 1)
         status_encoding = self._status_encoding(status_feature)
