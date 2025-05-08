@@ -45,45 +45,36 @@ class TransfuserLightningModule(pl.LightningModule):
         features, targets = batch
 
         real_valid_mask = features['real_valid_mask']
-        feature_render = features['camera_feature'][real_valid_mask].detach().clone()
-        status_render = features['status_feature'][real_valid_mask].detach().clone()
+        batch_size = real_valid_mask.shape[0]
+        if real_valid_mask.any():
+            camera_real = features['camera_feature_real'][real_valid_mask]
+            status_real = features['status_feature'][real_valid_mask]
+            target_traj_real = targets['trajectory'][real_valid_mask]
+            all_feature = torch.cat([features['camera_feature'], camera_real], dim=0)
+            all_status = torch.cat([features['status_feature'], status_real], dim=0)
+            all_target_traj = torch.cat([targets['trajectory'], target_traj_real], dim=0)
+            targets['trajectory'] = all_target_traj
+            features = {}
+            features['camera_feature'] = all_feature
+            features['status_feature'] = all_status
 
-        features['camera_feature'][real_valid_mask] = features['camera_feature_real'][real_valid_mask]
         prediction = self.agent.forward(features)
         loss = self.agent.compute_loss(features, targets, prediction)
 
-        camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
-        ego_status = features['status_feature'][0].cpu().numpy()
-        pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
-        gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
-
         if real_valid_mask.any():
-            with torch.no_grad():
-                features['camera_feature']= feature_render
-                features['status_feature'] = status_render
-                prediction_render = self.agent.forward(features)
-                render_bev_feature = prediction_render['bev_feature']
-            real_bev_feature = prediction['bev_feature'][real_valid_mask]
-            loss_render = F.mse_loss(render_bev_feature, real_bev_feature)
-            ade_real = torch.mean(torch.norm(prediction['trajectory'][real_valid_mask][...,:2] - targets['trajectory'][real_valid_mask][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+            bev_feature = prediction['bev_feature']
+            render_bev = bev_feature[:batch_size][real_valid_mask].detach()
+            real_bev = bev_feature[batch_size:]
+            loss_render = F.mse_loss(render_bev, real_bev)
             loss+=loss_render
+            ade_real = torch.mean(torch.norm(prediction['trajectory'][batch_size:,:2] - targets['trajectory'][batch_size:,:2], dim=-1))
+            self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
             self.log(f"{logging_prefix}/loss_render", loss_render, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True,
                      sync_dist=True)
-        render_mask = ~real_valid_mask
-        if render_mask.any():
-            ade_render = torch.mean(torch.norm(prediction['trajectory'][render_mask][...,:2] - targets['trajectory'][render_mask][...,:2], dim=-1))
-            self.log(f"{logging_prefix}/ade_render", ade_render, batch_size=render_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        ade = torch.mean(torch.norm(prediction['trajectory'][...,:2] - targets['trajectory'][...,:2], dim=-1))
-        self.log(f"{logging_prefix}/ade", ade, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        ade_render = torch.mean(torch.norm(prediction['trajectory'][:batch_size,:2] - targets['trajectory'][:batch_size,:2], dim=-1))
+        self.log(f"{logging_prefix}/ade_render", ade_render, batch_size=batch_size, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-
-
-        # camera = features['camera_feature'][0].permute(1, 2, 0).cpu().numpy()
-        # ego_status = features['status_feature'][0].cpu().numpy()
-        # pred_traj = prediction['trajectory'][0].detach().cpu().numpy()[:, :2]
-        # gt_traj = targets['trajectory'][0].cpu().numpy()[:, :2]
 
         if self.global_step % 1000 == 0 and False:
             # 创建图像
