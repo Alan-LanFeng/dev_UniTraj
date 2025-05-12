@@ -67,12 +67,12 @@ class TransfuserLightningModule(pl.LightningModule):
             real_bev = bev_feature[batch_size:]
             loss_render = F.mse_loss(render_bev, real_bev)
             loss+=loss_render
-            ade_real = torch.mean(torch.norm(prediction['trajectory'][batch_size:,:2] - targets['trajectory'][batch_size:,:2], dim=-1))
+            ade_real = torch.mean(torch.norm(prediction['trajectory'][batch_size:,:,2] - targets['trajectory'][batch_size:,:,2], dim=-1))
             self.log(f"{logging_prefix}/ade_real", ade_real, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
             self.log(f"{logging_prefix}/loss_render", loss_render, batch_size=real_valid_mask.sum(), on_step=False, on_epoch=True, prog_bar=True,
                      sync_dist=True)
 
-        ade_render = torch.mean(torch.norm(prediction['trajectory'][:batch_size,:2] - targets['trajectory'][:batch_size,:2], dim=-1))
+        ade_render = torch.mean(torch.norm(prediction['trajectory'][:batch_size,:,2] - targets['trajectory'][:batch_size,:,2], dim=-1))
         self.log(f"{logging_prefix}/ade_render", ade_render, batch_size=batch_size, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f"{logging_prefix}/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 

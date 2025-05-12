@@ -134,7 +134,7 @@ class V2TransfuserModel(nn.Module):
 
         agents = self._agent_head(agents_query)
         output.update(agents)
-
+        output["bev_feature"] = bev_feature
         return output
 
 class AgentHead(nn.Module):
