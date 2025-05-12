@@ -1,0 +1,30 @@
+_target_: navsim.agents.diffusiondrive.transfuser_agent.TransfuserAgent
+_convert_: 'all'
+
+config:
+  _target_: navsim.agents.diffusiondrive.transfuser_config.TransfuserConfig
+  _convert_: 'all'
+
+  trajectory_sampling:
+    _target_: nuplan.planning.simulation.trajectory.trajectory_sampling.TrajectorySampling
+    _convert_: 'all'
+    time_horizon: 4
+    interval_length: 0.5
+
+  latent: True
+
+checkpoint_path: null
+lr: 6e-4
+
+
+model_name: diffdrive
+used_cameras: ['cam_f0','cam_r0','cam_l0']
+metric_monitor: 'val/ade_real' # metric to monitor for early stopping
+constant_velocity_threshold: 1 # threshold for constant velocity
+perturb_scale: 30
+perturb_prob: 0
+train_batch_size: 2
+eval_batch_size: 2
+max_epochs: 100
+grad_clip_norm: 0
+

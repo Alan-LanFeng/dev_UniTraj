@@ -9,7 +9,8 @@ __all__ = {
     'wayformer': WayformerDataset,
     'MTR': MTRDataset,
     'MLPPlanner': MLPPlannerDataset,
-    'transfuser': TransfuserDataset
+    'transfuser': TransfuserDataset,
+    'diffdrive': TransfuserDataset
 }
 
 

@@ -62,7 +62,7 @@ class BaseDataset(Dataset):
                     if os.path.exists(self.cache_path):
                         shutil.rmtree(self.cache_path)
                     os.makedirs(self.cache_path, exist_ok=True)
-                    process_num = os.cpu_count()//2
+                    process_num = 1
                     print('Using {} processes to load data...'.format(process_num))
 
                     data_splits = np.array_split(summary_list, process_num)
