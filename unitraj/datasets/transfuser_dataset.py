@@ -36,23 +36,25 @@ class TransfuserDataset(BaseDataset):
         results = []
         sdc_pos = sdc_track['state']['position'][...,:2]
         sdc_heading = sdc_track['state']['heading'][...,np.newaxis]
-        sdc_vel = sdc_track['state']['velocity']
-        # calculate the acceleration
-        sdc_acce = np.zeros_like(sdc_vel)
-        sdc_acce[1:] = (sdc_vel[1:] - sdc_vel[:-1]) / 0.1
-        sdc_acce[0] = sdc_acce[1]
-        sdc_feature = np.concatenate([sdc_pos, sdc_heading, sdc_vel, sdc_acce], axis=-1)
+        sdc_feature = np.concatenate([sdc_pos, sdc_heading], axis=-1)
+        sdc_feature = [sdc_feature[i] for i in range(0, data_len, 5)]
+        sdc_feature = np.stack(sdc_feature, axis=0)
+        ego_dynamics = internal_format['ego_dynamics']
+        dynamic_feature = [
+            np.concatenate([ego_dynamics[i]['velocity'], ego_dynamics[i]['acceleration']], axis=-1) for i in
+            range(len(ego_dynamics))]
+        dynamic_feature = np.stack(dynamic_feature, axis=0)
+        data_len = sdc_feature.shape[0]
 
-
-        for current_index in range(15, data_len,5):
-            max_future_index = current_index + 40
+        for current_index in range(3,data_len):
+            max_future_index = current_index + 8
             if max_future_index >= data_len:
                 break
-            total_index = np.arange(current_index-15, max_future_index+1, 5)
+            total_index = np.arange(current_index-3, max_future_index+1)
             past_index = total_index[:4]
 
             sdc_feature_raw = sdc_feature[total_index].copy()
-            sdc_pos, sdc_heading, sdc_vel, sdc_acce = sdc_feature_raw[:, :2], sdc_feature_raw[:, 2:3], sdc_feature_raw[:, 3:5], sdc_feature_raw[:, 5:]
+            sdc_pos, sdc_heading = sdc_feature_raw[:, :2], sdc_feature_raw[:, 2:3]
 
             # Normalize position by translating to the origin (t=0)
             sdc_pos_norm = sdc_pos - sdc_pos[3]  # shape (T, 2)
@@ -64,28 +66,25 @@ class TransfuserDataset(BaseDataset):
             cos_t, sin_t = np.cos(-theta0), np.sin(-theta0)
             R = np.array([[cos_t, -sin_t],
                           [sin_t, cos_t]])  # shape (2, 2)
-
             # Rotate position, velocity, acceleration into ego frame at t=0
             sdc_pos_norm = sdc_pos_norm @ R.T  # shape (T, 2)
-            sdc_vel_rot = sdc_vel @ R.T  # shape (T, 2)
-            sdc_acce_rot = sdc_acce @ R.T  # shape (T, 2)
-
             # Rebuild feature: pos (normalized), heading (normalized), vel (rotated), acc (rotated)
-            sdc_feature_t = np.concatenate([sdc_pos_norm, sdc_heading_norm, sdc_vel_rot, sdc_acce_rot], axis=-1)
+            sdc_feature_t = np.concatenate([sdc_pos_norm, sdc_heading_norm], axis=-1)
+            command = [driving_command[i] for i in past_index]
+            sdc_feature_t = np.concatenate([sdc_feature_t, dynamic_feature[total_index]], axis=-1)
+            sdc_past_feature = sdc_feature_t[:4]
+            sdc_future_feature = sdc_feature_t[4:]
 
             is_monotonic = self.is_monotonic_trajectory(sdc_feature_t, threshold=self.config['constant_velocity_threshold'])
             if is_monotonic:
                 continue
             used_cameras = self.config['used_cameras']
-            camera_index = past_index//5
 
-            command = [driving_command[i] for i in camera_index]
-            sdc_past_feature = sdc_feature_t[:4]
-            sdc_future_feature = sdc_feature_t[4:]
+
             features_render = {}
             for builder in self._target_builders:
                 features_render.update(builder.compute_targets(sdc_future_feature[:,:3]))
-            camera = [camera_data_render[i] for i in camera_index]
+            camera = [camera_data_render[i] for i in past_index]
             agent_input = get_agent_input(sdc_past_feature, command, camera, used_cameras)
 
             for builder in self._feature_builders:
@@ -93,11 +92,15 @@ class TransfuserDataset(BaseDataset):
 
             features = {}
             try:
-                camera = [camera_data_real[i] for i in camera_index]
+                camera = [camera_data_real[i] for i in past_index]
                 agent_input = get_agent_input(sdc_past_feature, command, camera, used_cameras)
                 for builder in self._feature_builders:
                     features.update(builder.compute_features(agent_input))
-
+                # img = augment_image(features['camera_feature'])
+                # import matplotlib.pyplot as plt
+                # plt.imshow(img.transpose(1, 2, 0))
+                # plt.axis('off')
+                # plt.show()
                 features_render['camera_feature_real'] = features['camera_feature']
                 features_render['real_valid_mask'] = True
             except:
@@ -122,36 +125,29 @@ class TransfuserDataset(BaseDataset):
         Returns:
             bool - 是否是单调轨迹（True 表示应被过滤）
         """
-        assert sdc_feature.shape == (history_frames + future_frames, 7)
+        ego_velocity_2d = sdc_feature[3, 3:5]  # [vx, vy]
+        ego_speed = (ego_velocity_2d**2).sum(-1) ** 0.5
 
-        # 历史和未来轨迹
-        history = sdc_feature[:history_frames]
-        future = sdc_feature[history_frames:]
+        num_poses, dt = (
+            8,
+            0.5,
+        )
+        poses = np.array(
+            [[(time_idx + 1) * dt * ego_speed, 0.0] for time_idx in range(num_poses)],
+            dtype=np.float32,
+        )
 
-        # 获取最后一帧的历史位置和速度
-        last_pos = history[-1, :2]  # [x, y]
-        velocity = history[-1, 3:5]  # [vx, vy]
-
-        # 使用 constant velocity model 外推未来位置
-        predicted_future_pos = []
-        for i in range(1, future_frames + 1):
-            delta_t = i * dt
-            pred_pos = last_pos + velocity * delta_t
-            predicted_future_pos.append(pred_pos)
-        predicted_future_pos = np.stack(predicted_future_pos, axis=0)  # shape: (future_frames, 2)
-
-        # 真实未来位置
-        true_future_pos = future[:, :2]  # shape: (future_frames, 2)
+        true_future_pos = sdc_feature[4:, :2]  # shape: (future_frames, 2)
 
         # 计算平均欧氏距离
-        errors = np.linalg.norm(predicted_future_pos - true_future_pos, axis=1)
+        errors = np.linalg.norm(poses - true_future_pos, axis=1)
         mean_error = np.mean(errors)
 
         return mean_error < threshold
 
     def postprocess(self, data):
         internal_format, results = data
-        #return results
+        return results
         # from tqdm import tqdm
         # img_list = []
         # for i in tqdm(range(0, 200, 5)):
@@ -163,31 +159,38 @@ class TransfuserDataset(BaseDataset):
         tracks = internal_format['tracks']
         sdc_track = tracks[sdc_id]
 
-        original_pos = sdc_track['state']['position'].copy() # (N,3)
-        original_heading = sdc_track['state']['heading'].copy()  # (N,)
-        original_velocity = sdc_track['state']['velocity'].copy()  # (N,3)
-        data_len = original_pos.shape[0]
-        driving_command = internal_format['driving_command']
-        perturb_scale = self.config['perturb_scale']
+        sdc_pos = sdc_track['state']['position'][..., :2]
+        sdc_heading = sdc_track['state']['heading'][..., np.newaxis]
+        sdc_feature = np.concatenate([sdc_pos, sdc_heading], axis=-1)
+        sdc_feature = [sdc_feature[i] for i in range(0, internal_format['length'], 5)]
+        sdc_feature = np.stack(sdc_feature, axis=0)
+        ego_dynamics = internal_format['ego_dynamics']
+        dynamic_feature = [
+            np.concatenate([ego_dynamics[i]['velocity'], ego_dynamics[i]['acceleration']], axis=-1) for i in
+            range(len(ego_dynamics))]
+
+        dynamic_feature = np.stack(dynamic_feature, axis=0)
+        data_len = sdc_feature.shape[0]
         perturb_prob = self.config['perturb_prob']
-        for current_index in range(15, data_len, 5):
+        perturb_scale = self.config['perturb_scale']
+
+        for current_index in range(3, data_len):
             if np.random.rand() > perturb_prob:
                 continue
-            max_future_index = current_index + 40
+            max_future_index = current_index + 8
             if max_future_index >= data_len:
                 break
 
-            total_index = np.arange(current_index-15, max_future_index+1, 5)
+            total_index = np.arange(current_index-3, max_future_index+1)
             past_index = total_index[:4]
 
-            internal_format['tracks'][sdc_id]['state']['position'] = original_pos
-            internal_format['tracks'][sdc_id]['state']['heading'] = original_heading
-            internal_format['tracks'][sdc_id]['state']['velocity'] = original_velocity
+            internal_format['tracks'][sdc_id]['state']['position'] = sdc_pos
+            internal_format['tracks'][sdc_id]['state']['heading'] = sdc_heading
             dx = np.random.normal(0.0, perturb_scale)  # 纵向
             dy = np.random.normal(0.0, perturb_scale)  # 横向
-            perturbed_pos = perturb_positions(original_pos, current_index, dx, dy, std=10)
+            perturbed_pos = perturb_positions(sdc_pos, current_index, dx, dy, std=10)
             heading_raw = derive_heading_from_positions(perturbed_pos)
-            perturbed_heading = blend_and_smooth_heading(original_heading, heading_raw)
+            perturbed_heading = blend_and_smooth_heading(sdc_heading, heading_raw)
             perturbed_velocity = recompute_velocity(perturbed_pos)
 
             sdc_pos = perturbed_pos[:,:2]
@@ -224,10 +227,24 @@ class TransfuserDataset(BaseDataset):
             if is_monotonic:
                 continue
 
+            # from tqdm import tqdm
+            # img_list = []
+            # for i in range(current_index-15, max_future_index+1, 5):
+            #     img_dict = self.renderer.observe(internal_format, i)
+            #     img_list.append(img_dict)
+            # save_as_video(img_list, f"output_before.mp4")
+
             internal_format['tracks'][sdc_id]['state']['position'] = perturbed_pos
             internal_format['tracks'][sdc_id]['state']['heading'] = perturbed_heading
             internal_format['tracks'][sdc_id]['state']['velocity'] = perturbed_velocity
             img_dict = self.renderer.observe(internal_format, current_index)
+
+            # from tqdm import tqdm
+            # img_list = []
+            # for i in range(current_index-15, max_future_index+1, 5):
+            #     img_dict = self.renderer.observe(internal_format, i)
+            #     img_list.append(img_dict)
+            # save_as_video(img_list, f"output_after.mp4")
 
             used_cameras = self.config['used_cameras']
             camera_index = past_index//5
@@ -312,3 +329,107 @@ class TransfuserDataset(BaseDataset):
         #batch_dict = {'batch_size': batch_size, 'input_dict': input_dict, 'batch_sample_count': batch_size}
         return (feature, target)
 
+
+def _gaussian_kernel1d(sigma, radius):
+    """纯 NumPy 生成 1‑D 高斯核"""
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel = np.exp(-(x ** 2) / (2 * sigma ** 2))
+    kernel /= kernel.sum()
+    return kernel
+
+def _blur_numpy(img, sigma):
+    """对 (C,H,W) 图像做 separable Gaussian blur（无 OpenCV 时使用）"""
+    radius = int(3 * sigma)
+    if radius == 0:
+        return img
+    k = _gaussian_kernel1d(sigma, radius)
+    # separable：先 H 方向，再 W 方向
+    tmp = np.apply_along_axis(lambda m: np.convolve(m, k, mode="same"), 1, img)
+    blurred = np.apply_along_axis(lambda m: np.convolve(m, k, mode="same"), 2, tmp)
+    return blurred
+
+def augment_image(
+    img,
+    noise_std_range=(0.0, 0.03),
+    brightness_range=(0.8, 1.2),
+    contrast_range=(0.8, 1.2),
+    gamma_range=(0.9, 1.1),
+    flip_prob=0.5,
+    dropout_prob=0.3,
+    dropout_size=0.1,
+    blur_prob=1,
+    blur_sigma_range=(0.5, 2.0),
+    seed=None,
+):
+    """
+    Data augmentation with added Gaussian blur.
+
+    Parameters
+    ----------
+    ...（前面的参数保持不变）...
+    blur_prob : float
+        Probability of applying Gaussian blur.
+    blur_sigma_range : tuple
+        Uniform range for σ when blurring.
+    """
+
+    if seed is not None:
+        rng_state = np.random.get_state()
+        np.random.seed(seed)
+
+    orig_dtype = img.dtype
+    x = img.astype(np.float32)
+    if orig_dtype == np.uint8:
+        x /= 255.0
+
+    # 1. Horizontal flip
+    if np.random.rand() < flip_prob:
+        x = x[:, :, ::-1]
+
+    # 2. Brightness
+    x *= np.random.uniform(*brightness_range)
+
+    # 3. Contrast
+    mean = x.mean(axis=(1, 2), keepdims=True)
+    x = (x - mean) * np.random.uniform(*contrast_range) + mean
+
+    # 4. Gamma tone‑mapping
+    x = np.clip(x, 1e-6, 1.0) ** np.random.uniform(*gamma_range)
+
+    # 5. **Gaussian blur**
+    if np.random.rand() < blur_prob:
+        sigma = np.random.uniform(*blur_sigma_range)
+        try:
+            import cv2  # 优先用 OpenCV
+            # cv2 接收 H×W×C 且通道最后
+            x = cv2.GaussianBlur(
+                x.transpose(1, 2, 0), ksize=(0, 0), sigmaX=sigma, borderType=cv2.BORDER_REFLECT101
+            ).transpose(2, 0, 1)
+        except ImportError:
+            x = _blur_numpy(x, sigma)
+
+    # 6. Gaussian noise
+    sigma_n = np.random.uniform(*noise_std_range)
+    if sigma_n > 0:
+        x += np.random.normal(0.0, sigma_n, size=x.shape).astype(np.float32)
+
+    # 7. Coarse dropout (CutOut)
+    if np.random.rand() < dropout_prob:
+        h, w = x.shape[1:]
+        sz = int(min(h, w) * dropout_size)
+        if sz > 0:
+            top = np.random.randint(0, h - sz + 1)
+            left = np.random.randint(0, w - sz + 1)
+            x[:, top : top + sz, left : left + sz] = 0.0
+
+    # 8. Clip & cast back
+    x = np.clip(x, 0.0, 1.0)
+    if orig_dtype == np.uint8:
+        x = (x * 255.0).round().astype(np.uint8)
+    else:
+        x = x.astype(orig_dtype)
+
+    if seed is not None:
+        np.random.set_state(rng_state)
+
+    return x
